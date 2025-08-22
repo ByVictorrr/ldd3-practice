@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="PublishConfigData" remoteFilesAllowedToDisappearOnAutoupload="false">
+    <serverData>
+      <paths name="Remote Host (1845a6b7-e15f-4752-9ed6-1e9296aeae80)">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/home/ml-gpu/clion/ldd3-practice" local="$PROJECT_DIR$/" />
+          </mappings>
+          <excludedPaths>
+            <excludedPath local="true" path="$PROJECT_DIR$/ldd3/ch02_hello/cmake-build-debug-remote-host" />
+            <excludedPath local="true" path="$PROJECT_DIR$/ldd3/ch02_hello/cmake-build-debug" />
+          </excludedPaths>
+        </serverdata>
+      </paths>
+    </serverData>
+  </component>
+</project>
