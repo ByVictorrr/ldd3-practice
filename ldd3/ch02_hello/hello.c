@@ -1,7 +1,8 @@
-#include <linux/init.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/moduleparam.h>
+#include <linux/init.h>
+
 #include "hello.h"
 
 static int howmany = 1;

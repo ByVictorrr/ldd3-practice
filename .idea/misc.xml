@@ -1,7 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
-  <component name="CMakeWorkspace" PROJECT_DIR="$PROJECT_DIR$/ldd3/ch02_hello">
-    <contentRoot DIR="$PROJECT_DIR$" />
+  <component name="Black">
+    <option name="sdkName" value="Python 3.9" />
   </component>
+  <component name="CMakePythonSetting">
+    <option name="pythonIntegrationState" value="YES" />
+  </component>
+  <component name="CMakeWorkspace" PROJECT_DIR="$PROJECT_DIR$" />
   <component name="ProjectRootManager" version="2" project-jdk-name="Python 3.9" project-jdk-type="Python SDK" />
 </project>

@@ -1,7 +1,9 @@
-#include <linux/init.h>
+
+#include <linux/in.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include "hello.h"   // now we include the header instead of extern
+#include <linux/init.h>
 
 MODULE_LICENSE("GPL");
 
