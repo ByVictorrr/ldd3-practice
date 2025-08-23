@@ -2,7 +2,7 @@
 set -euo pipefail
 # Generate a merged compile_commands.json for all chapter modules.
 # Usage: gen_compile_db.sh [PROJECT_ROOT] [KDIR]
-ROOT="${1:-$HOME/clion/ldd3-practice}"
+ROOT="${1:-$HOME/CLionProjects/ldd3-practice}"
 KDIR="${2:-${KDIR:-/lib/modules/$(uname -r)/build}}"
 OUT="$ROOT/compile_commands.json"
 
