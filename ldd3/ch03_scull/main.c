@@ -1,0 +1,99 @@
+#include <linux/init.h>
+#include <linux/module.h>
+#include <linux/kernel.h>
+#include <linux/moduleparam.h>
+#include <linux/semaphore.h>
+#include <linux/cdev.h>
+#include <linux/fs.h>
+#include "fops.h"
+
+
+MODULE_LICENSE("GPL");
+MODULE_AUTHOR("Victor Delaplaine");
+MODULE_DESCRIPTION("Scull");
+MODULE_VERSION("0.2");
+
+
+
+struct file_operations scull_fops ={
+    .owner = THIS_MODULE,
+    .open = scull_open,
+    .read = scull_read,
+    .write = scull_write,
+	/*
+    .unlocked_ioctl = scull_ioctl,
+    .llseek = scull_llseek,
+	.release = scull_release,
+	*/
+};
+
+static void scull_setup_cdev(struct scull_dev *dev, int index)
+{
+	int err;
+	dev_t devno = MKDEV(scull_major, scull_minor + index);
+	// associate the cdev with file operations
+	cdev_init(&dev->cdev, &scull_fops);
+	dev->cdev.owner = THIS_MODULE;
+	err = cdev_add(&dev->cdev, devno, 1);
+	if (err)
+		printk(KERN_NOTICE "scull: cdev_add failed\n");
+}
+
+
+static int __init scull_init(void) {
+	dev_t dev;
+	int result, i;
+
+	if (scull_major)
+	{
+		/*
+		* With given (major, start_minor) register scull_nr_devs with name "scull" in /proc/devices
+		*/
+		dev = MKDEV(scull_major, scull_minor);
+		result = register_chrdev_region(dev, scull_nr_devs, "scull");
+	}else
+	{
+		result = alloc_chrdev_region(&dev, scull_minor, scull_nr_devs, "scull");
+		scull_major = MAJOR(dev);
+	}
+	if (result < 0)
+	{
+		printk(KERN_WARNING "scull: cant get major %d\n", scull_major);
+		return result;
+	}
+	/* GFP_KERNEL */
+	scull_devices = kmalloc(scull_nr_devs * sizeof(struct scull_dev), GFP_KERNEL);
+	if (!scull_devices)
+	{
+		result = -ENOMEM;
+	}
+	struct scull_dev *device;
+
+	// create class at /sys/class/scull
+	struct class * cls = class_create(THIS_MODULE, "scull");
+	for (i=0; i<scull_nr_devs; i++)
+	{
+		device = &(scull_devices[i]);
+		sema_init(&device->sem, 1);
+		scull_setup_cdev(device, i);
+		// uevent that udev uses to create /dev/scull{i}
+		device_create(cls, NULL, MKDEV(scull_major, scull_minor+i), NULL, "scull%d", i);
+
+	}
+
+
+
+    return 0;
+}
+
+static void __exit scull_exit(void) {
+
+	dev_t devno = MKDEV(scull_major, scull_minor);
+	/* Get rid of our char dev enteries */
+
+    printk(KERN_INFO "Goodbye");
+}
+
+module_init(scull_init);
+module_exit(scull_exit);
+
