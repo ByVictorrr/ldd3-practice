@@ -2,6 +2,7 @@
 #include <linux/fs.h>
 #include <linux/container_of.h>
 #include "scull.h"
+#include "scull_ioctl.h"
 
 
 int scull_dev_reset(struct scull_dev *dev)
@@ -194,7 +195,35 @@ loff_t scull_llseek(struct file *filp, loff_t off, int whence)
 }
 long scull_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
-
+    struct scull_dev * dev = filp->private_data;
+    long retval;
+    int q;
+    if (_IOC_TYPE(cmd) != SCULL_IOC_MAGIC)
+        return -ENOTTY;
+    switch (cmd)
+    {
+    case SCULL_IOCRESET:
+        scull_qset = SCULL_QSET;
+        scull_quantum = SCULL_QUANTUM;
+        break;
+    case SCULL_IOCSQSET:
+        retval = __get_user(q, (int __user *)arg);
+        scull_qset = q;
+        break;
+    case SCULL_IOCGQSET:
+        retval = __put_user(scull_qset, (int __user *)arg);
+        break;
+    case SCULL_IOCSQUANTUM:
+        retval = __get_user(q, (int __user *)arg);
+        scull_quantum = q;
+        break;
+    case SCULL_IOCGQUANTUM:
+        retval = __put_user(scull_quantum, (int __user *)arg);
+        break;
+    default:
+        return -ENOTTY;
+    }
+    return retval;
 }
 
 struct file_operations scull_fops ={

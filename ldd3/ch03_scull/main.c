@@ -5,28 +5,37 @@
 #include <linux/semaphore.h>
 #include <linux/cdev.h>
 #include <linux/fs.h>
-#include "fops.h"
+#include "scull.h"
 
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Victor Delaplaine");
 MODULE_DESCRIPTION("Scull");
 MODULE_VERSION("0.2");
+int scull_major = SCULL_MAJOR;
+module_param(scull_major, int, 0444);
+MODULE_PARM_DESC(scull_major, "Major number");
+
+int scull_minor = SCULL_MINOR;
+module_param(scull_minor, int, 0444);
+MODULE_PARM_DESC(scull_minor, "Minor number");
+
+int scull_nr_devs = SCULL_NR_DEVS;
+module_param(scull_nr_devs, int, 0444);
+MODULE_PARM_DESC(scull_nr_devs, "Number of SCULL Devices");
+
+int scull_qset = SCULL_QSET;
+module_param(scull_qset, int, 0444);
+MODULE_PARM_DESC(scull_qset, "How large should the qset be?");
+
+int scull_quantum = SCULL_QSET;
+module_param(scull_quantum, int, 0444);
+MODULE_PARM_DESC(scull_quantum, "How large should the quantum be?");
 
 
-
-struct file_operations scull_fops ={
-    .owner = THIS_MODULE,
-    .open = scull_open,
-    .read = scull_read,
-    .write = scull_write,
-	/*
-    .unlocked_ioctl = scull_ioctl,
-    .llseek = scull_llseek,
-	.release = scull_release,
-	*/
-};
-
+extern struct file_operations scull_fops;  // from scull.c
+struct class * cls;
+struct scull_dev *scull_devices;
 static void scull_setup_cdev(struct scull_dev *dev, int index)
 {
 	int err;
@@ -39,7 +48,25 @@ static void scull_setup_cdev(struct scull_dev *dev, int index)
 		printk(KERN_NOTICE "scull: cdev_add failed\n");
 }
 
+void _scull_cleanup_module(void)
+{
+	dev_t devno = MKDEV(scull_major, scull_minor);
+	int i;
+	/* Get rid of our char dev enteries */
 
+	if (scull_devices)
+	{
+		for (i=0; i < scull_nr_devs; i++)
+		{
+			scull_dev_reset(&scull_devices[i]);
+			cdev_del(&scull_devices[i].cdev);
+			device_destroy(cls, MKDEV(MAJOR(devno), scull_minor + i));
+		}
+		kfree(scull_devices);
+	}
+	unregister_chrdev_region(devno, scull_nr_devs);
+	class_destroy(cls);
+}
 static int __init scull_init(void) {
 	dev_t dev;
 	int result, i;
@@ -66,11 +93,12 @@ static int __init scull_init(void) {
 	if (!scull_devices)
 	{
 		result = -ENOMEM;
+		goto fail;
 	}
 	struct scull_dev *device;
 
 	// create class at /sys/class/scull
-	struct class * cls = class_create(THIS_MODULE, "scull");
+	cls = class_create(THIS_MODULE, "scull");
 	for (i=0; i<scull_nr_devs; i++)
 	{
 		device = &(scull_devices[i]);
@@ -78,20 +106,18 @@ static int __init scull_init(void) {
 		scull_setup_cdev(device, i);
 		// uevent that udev uses to create /dev/scull{i}
 		device_create(cls, NULL, MKDEV(scull_major, scull_minor+i), NULL, "scull%d", i);
-
 	}
 
+	return 0;
 
-
-    return 0;
+	fail:
+	_scull_cleanup_module();
+	return result;
 }
 
+
 static void __exit scull_exit(void) {
-
-	dev_t devno = MKDEV(scull_major, scull_minor);
-	/* Get rid of our char dev enteries */
-
-    printk(KERN_INFO "Goodbye");
+	_scull_cleanup_module();
 }
 
 module_init(scull_init);

@@ -20,7 +20,8 @@ set(KHDRS
         ${KDIR}/arch/x86/include/generated
         ${KDIR}/arch/x86/include/uapi
 )
-add_library(kernel_headers INTERFACE)
+add_library(kernel_headers INTERFACE
+        ldd3/ch04_debug/debug.h)
 target_include_directories(kernel_headers SYSTEM INTERFACE
         ${KDIR}/include
         ${KDIR}/include/generated
@@ -117,7 +118,10 @@ function(kmod_target NAME)
     add_custom_target(${NAME} ALL DEPENDS "${STAGE}/${NAME}.ko")
 
     # ---- CLion indexing-only dummy (no compile/link) ----
-    add_library(${NAME}_index STATIC EXCLUDE_FROM_ALL ${KMOD_SOURCES})
+    add_library(${NAME}_index STATIC EXCLUDE_FROM_ALL ${KMOD_SOURCES} ${KMOD_HEADERS})
+    get_filename_component(_mod_srcdir "${CMAKE_CURRENT_SOURCE_DIR}" ABSOLUTE)
+    target_include_directories(${NAME}_index PRIVATE "${_mod_srcdir}")
+
     target_link_libraries(${NAME}_index PRIVATE kernel_headers)
     target_compile_definitions(${NAME}_index PRIVATE __KERNEL__ MODULE KBUILD_MODNAME=\"${NAME}\")
 
@@ -140,3 +144,4 @@ endfunction()
 # Bring in subprojects (each chapter)
 add_subdirectory(ldd3/ch02_hello)
 add_subdirectory(ldd3/ch03_scull)
+add_subdirectory(ldd3/ch04_debug)

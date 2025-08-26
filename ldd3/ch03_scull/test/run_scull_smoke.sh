@@ -19,7 +19,7 @@ NAME="${SCULL_NAME:-scull}"
 MAJOR="${SCULL_MAJOR:-}"
 MOD="${SCULL_MODULE:-}"
 RESET="${ALLOW_RESET:-0}"
-
+SUDO_BIN="${SUDO_BIN:-}"        # set SUDO_BIN=sudo via CTest env if you need root for open()
 log() { printf ">> %s\n" "$*"; }
 
 # 0) Try to load module if requested
@@ -113,36 +113,36 @@ ls -l "$DEV"
 # 2) Optional reset
 if [[ "$RESET" == "1" ]]; then
   log "Resetting device"
-  if ! "$BIN" -d "$DEV" --reset; then
+  if ! ${SUDO_BIN:+sudo} "$BIN" -d "$DEV" --reset; then
     echo "WARN: reset failed (needs CAP_SYS_ADMIN?); continuing" >&2
   fi
 fi
 
-# 3) Get/Set quantum
+# 3) Get/Set quantum  (NO tee, NO /tmp)
 log "Get current quantum"
-"$BIN" -d "$DEV" --get-quantum | tee /tmp/scull_q.out
-cur_q=$(awk '/Current quantum:/{print $3}' /tmp/scull_q.out || true)
+out=$(${SUDO_BIN:+sudo} "$BIN" -d "$DEV" --get-quantum)
+cur_q=$(printf "%s\n" "$out" | awk '/Current quantum:/{print $3}')
 log "Set quantum to 4096"
-"$BIN" -d "$DEV" --set-quantum 4096
+${SUDO_BIN:+sudo} "$BIN" -d "$DEV" --set-quantum 4096
 log "Verify quantum == 4096"
-"$BIN" -d "$DEV" --get-quantum | tee /tmp/scull_q2.out
-new_q=$(awk '/Current quantum:/{print $3}' /tmp/scull_q2.out || true)
+out=$(${SUDO_BIN:+sudo} "$BIN" -d "$DEV" --get-quantum)
+new_q=$(printf "%s\n" "$out" | awk '/Current quantum:/{print $3}')
 [[ "$new_q" == "4096" ]] || { echo "FAIL: quantum expected 4096, got '$new_q'"; exit 3; }
 
-# 4) Set/Get qset
+# 4) Set/Get qset (NO tee, NO /tmp)
 log "Set qset to 1000"
-"$BIN" -d "$DEV" --set-qset 1000
+${SUDO_BIN:+sudo} "$BIN" -d "$DEV" --set-qset 1000
 log "Verify qset == 1000"
-"$BIN" -d "$DEV" --get-qset | tee /tmp/scull_qs.out
-new_qs=$(awk '/Current qset:/{print $3}' /tmp/scull_qs.out || true)
+out=$(${SUDO_BIN:+sudo} "$BIN" -d "$DEV" --get-qset)
+new_qs=$(printf "%s\n" "$out" | awk '/Current qset:/{print $3}')
 [[ "$new_qs" == "1000" ]] || { echo "FAIL: qset expected 1000, got '$new_qs'"; exit 4; }
 
 # 5) Write/seek/read roundtrip
 msg="hello"
 log "Write payload: $msg"
-"$BIN" -d "$DEV" --write "$msg"
+${SUDO_BIN:+sudo} "$BIN" -d "$DEV" --write "$msg"
 log "Seek to 0 and read 5"
-out=$("$BIN" -d "$DEV" --seek 0 --read 5 | awk -F': ' '/^Read [0-9]+ bytes:/ {print $2; exit}')
+out=$(${SUDO_BIN:+sudo} "$BIN" -d "$DEV" --seek 0 --read 5 | awk -F': ' '/^Read [0-9]+ bytes:/ {print $2; exit}')
 [[ "$out" == "$msg" ]] || { echo "FAIL: readback expected '$msg', got '$out'"; exit 5; }
 
 log "All smoke tests passed"
