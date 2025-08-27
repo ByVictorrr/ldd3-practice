@@ -1,5 +1,7 @@
 #include <linux/module.h>
+#include <linux/init.h>
 #include <linux/proc_fs.h>
+#define
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Victor Delaplaine");
 MODULE_DESCRIPTION("Scull_proc");
@@ -27,6 +29,7 @@ static ssize_t scull_mem_read(struct file *file, char __user *ubuf, size_t len, 
 
 
 }
+
 struct proc_ops scull_mem_ops = {
     .proc_read = scull_mem_read,
 };
