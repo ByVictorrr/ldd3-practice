@@ -72,7 +72,7 @@ static const struct proc_ops scullmem_ops = {
 };
 
 /* ---- module init/exit ---- */
-static int __init scullmem_init(void)
+static int __init scull_sysfs_init(void)
 {
     gstate = kzalloc(sizeof(*gstate), GFP_KERNEL);
     if (!gstate)
@@ -93,12 +93,12 @@ static int __init scullmem_init(void)
     return 0;
 }
 
-static void __exit scullmem_exit(void)
+static void __exit scull_sysfs_exit(void)
 {
     remove_proc_entry("scull_mem", NULL);
     kfree(gstate);
     pr_info("scull_mem: removed\n");
 }
 
-module_init(scullmem_init);
-module_exit(scullmem_exit);
+module_init(scull_sysfs_init);
+module_exit(scull_sysfs_exit);

@@ -22,3 +22,10 @@ kmod_target(scull_proc_seq_snapshot
         # EXTRA_CFLAGS "-Wall -Wextra -DDEBUG"
         EXTRA_CFLAGS "-I${CMAKE_CURRENT_SOURCE_DIR} -DSCULL_DEBUG" # include headers in cwd
 )
+
+kmod_target(scull_sysfs
+        SOURCES sysfs.c
+        HEADERS debug.h
+        # EXTRA_CFLAGS "-Wall -Wextra -DDEBUG"
+        EXTRA_CFLAGS "-I${CMAKE_CURRENT_SOURCE_DIR} -DSCULL_DEBUG" # include headers in cwd
+)
