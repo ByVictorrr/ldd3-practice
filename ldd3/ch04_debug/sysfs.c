@@ -56,7 +56,7 @@ static int __init scull_sysfs_init(void)
         return -ENOMEM;
     }
     /* Create the file /sys/kernel/scull/counter */
-    if (sysfs_create_file(kernel_kobj, &counter_attr.attr)) {
+    if (sysfs_create_file(scull_kobj, &counter_attr.attr)) {
         pr_err("scull: failed to create sysfs file\n");
         kobject_put(scull_kobj); // try to remove directory after ref count == 0
         kfree(gstate);

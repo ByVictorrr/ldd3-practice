@@ -14,7 +14,7 @@ struct scull_state {
     char last_cmd[64];
     struct mutex lock;
 } *gstate;
-static ssize_t scull_mem_read(struct file *file, char __user *ubuf, size_t len, loff_t *ppos)
+static ssize_t scull_lastcmd_read(struct file *file, char __user *ubuf, size_t len, loff_t *ppos)
 {
     int n;
     char buf[128];
@@ -31,9 +31,9 @@ static ssize_t scull_mem_read(struct file *file, char __user *ubuf, size_t len, 
 }
 
 struct proc_ops scull_mem_ops = {
-    .proc_read = scull_mem_read,
+    .proc_read = scull_lastcmd_read,
 };
-static ssize_t scull_ctrl_write(struct file *file, const char __user *ubuf, size_t len, loff_t *ppos)
+static ssize_t scull_lastcmd_write(struct file *file, const char __user *ubuf, size_t len, loff_t *ppos)
 {
     struct scull_state *st = pde_data(file_inode(file));
     if (!st)
@@ -61,11 +61,11 @@ static ssize_t scull_ctrl_write(struct file *file, const char __user *ubuf, size
     return n;
 }
 struct proc_ops scull_ctrl_ops = {
-   .proc_write =  scull_ctrl_write,
+   .proc_write =  scull_lastcmd_write,
 };
 
 
-int __init scull_proc_init(void)
+int __init scull_debugfs_init(void)
 {
     /* Allocate shared state */
     gstate = kzalloc(sizeof(*gstate), GFP_KERNEL);
@@ -101,7 +101,7 @@ int __init scull_proc_init(void)
     return -ENOMEM;
 }
 
-static void __exit scull_proc_exit(void)
+static void __exit scull_debugfs_exit(void)
 {
     /* Removes /proc/scull and all children in one shot */
     remove_proc_subtree("scull", NULL);
@@ -110,5 +110,5 @@ static void __exit scull_proc_exit(void)
     pr_info("scull procfs removed\n");
 }
 
-module_init(scull_proc_init);
-module_exit(scull_proc_exit);
+module_init(scull_debugfs_init);
+module_exit(scull_debugfs_exit);

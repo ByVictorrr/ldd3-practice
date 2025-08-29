@@ -40,7 +40,10 @@ int scull_open(struct inode *inode, struct file *filp)
     filp->private_data = device; // to be used in other callbacks
     /* Special case if opened for write only: reset device */
     if ((filp->f_flags & O_ACCMODE) == O_WRONLY)
+        if (down_interruptible(&device->sem))
+            return -ERESTARTSYS;
         scull_dev_reset(device);
+        up(&device->sem);
     return 0;
 }
 int scull_release(struct inode *inode,  struct file *filp){return 0;}

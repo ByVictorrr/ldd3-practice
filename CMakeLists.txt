@@ -145,3 +145,5 @@ endfunction()
 add_subdirectory(ldd3/ch02_hello)
 add_subdirectory(ldd3/ch03_scull)
 add_subdirectory(ldd3/ch04_debug)
+add_subdirectory(ldd3/ch05_concurrency)
+
