@@ -21,7 +21,8 @@ set(KHDRS
         ${KDIR}/arch/x86/include/uapi
 )
 add_library(kernel_headers INTERFACE
-        ldd3/ch04_debug/debug.h)
+        ldd3/ch04_debug/debug.h
+        ldd3/ch06_advanced_char/scull_pipe.h)
 target_include_directories(kernel_headers SYSTEM INTERFACE
         ${KDIR}/include
         ${KDIR}/include/generated
