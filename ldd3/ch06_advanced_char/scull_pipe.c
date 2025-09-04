@@ -7,6 +7,7 @@
 #include "scull_pipe.h"
 
 
+int scull_p_buffer = 100;
 
 ssize_t scull_p_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos)
 {
@@ -127,8 +128,11 @@ ssize_t scull_p_write(struct file *filp, const char __user *buf, size_t count, l
 
 unsigned int scull_p_poll(struct file *filp, poll_table *wait)
 {
+    // function used by the kernel as a condition when mask != 0 to break out of wait queue
+
     struct scull_pipe *dev = filp->private_data;
     unsigned int mask = 0;
+    down(&dev->sem);
     // register the wait queues with the poll system
     poll_wait(filp, &dev->inq, wait);
     poll_wait(filp, &dev->outq, wait);
@@ -138,13 +142,62 @@ unsigned int scull_p_poll(struct file *filp, poll_table *wait)
         mask |= POLLIN | POLLRDNORM; // readable: data available
     if (get_spacefree(dev))
         mask |= POLLOUT | POLLWRNORM; // writeable: space available
+    if (dev->rp == dev->wp && dev->nwriters == 0) // emtpy and no writer
+        mask |= POLLHUP | POLLIN; // device is in hangup state, also mark it as readable
+    up(&dev->sem);
     return mask;
 }
+int scull_p_fasync(int fd, struct file *filp, int on)
+{
+    // register/de-register on async queue to be notified when kill_async called
+    struct scull_pipe *dev = filp->private_data;
+    return fasync_helper(fd, filp, on, &dev->fasync_queue);
+}
+
 int scull_p_open(struct inode *inode, struct file *filp){
     struct scull_pipe *device = container_of(inode->i_cdev, struct scull_pipe, cdev);
+    filp->private_data = device;
+    if (down_interruptible(&device->sem))
+        return -ERESTARTSYS;
+    if (!device->start)
+    {
+        // allocate the device
+        device->start = kmalloc(scull_p_buffer, GFP_KERNEL);
+        if (!device->start)
+            up(&device->sem);
+            return -ENOMEM;
+    }
+    device->buffersize = scull_p_buffer;
+    device->end = device->start + device->buffersize;
+    device->rp = device->wp = device->start;
+    //* use f_mode -> standarized
+    if (filp->f_mode & FMODE_WRITE)
+        device->nwriters++;
+    if (filp->f_mode & FMODE_READ)
+        device->nreaders++;
+    up(&device->sem);
+
+    return nonseekable_open(inode, filp);
 
 }
-int scull_p_release(struct inode *inode,  struct file *filp){}
+int scull_p_release(struct inode *inode,  struct file *filp)
+{
+    struct scull_pipe *dev = filp->private_data;
+    // remove this filp from async notified filps
+    scull_p_fasync(-1, filp, 0);
+    down(&dev->sem);
+    if (filp->f_mode & FMODE_WRITE)
+        dev->nwriters--;
+    if (filp->f_mode & FMODE_READ)
+        dev->nreaders--;
+    if (dev->nreaders == 0 && dev->nwriters == 0)
+    {
+        kfree(dev->start);
+        dev->start = NULL;
+    }
+    up(&dev->sem);
+    return 0;
+}
 
 
 
@@ -157,4 +210,5 @@ struct file_operations scull_pipe_fops ={
     .unlocked_ioctl = scull_ioctl,
     .llseek = no_llseek,
     .poll = scull_p_poll,
+    .fasync = scull_p_fasync,
 };
