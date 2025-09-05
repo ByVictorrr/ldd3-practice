@@ -202,13 +202,11 @@ int scull_p_release(struct inode *inode,  struct file *filp)
             wake_up_interruptible(&dev->inq);  // let readers see EOF
     if (filp->f_mode & FMODE_READ)
         dev->nreaders--;
-    /*
     if (dev->nreaders == 0 && dev->nwriters == 0)
     {
         kfree(dev->start);
         dev->start = NULL;
     }
-    */
     up(&dev->sem);
     return 0;
 }
