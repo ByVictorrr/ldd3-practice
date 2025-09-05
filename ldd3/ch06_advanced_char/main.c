@@ -6,6 +6,7 @@
 #include <linux/cdev.h>
 #include <linux/fs.h>
 #include "scull.h"
+#include "scull_pipe.h"
 
 
 MODULE_LICENSE("GPL");
@@ -77,6 +78,7 @@ static int __init scull_init(void) {
 		* With given (major, start_minor) register scull_nr_devs with name "scull" in /proc/devices
 		*/
 		dev = MKDEV(scull_major, scull_minor);
+		// starting at scull_major get scull_nr_devs that are available for minor numbers
 		result = register_chrdev_region(dev, scull_nr_devs, "scull");
 	}else
 	{
@@ -107,6 +109,8 @@ static int __init scull_init(void) {
 		// uevent that udev uses to create /dev/scull{i}
 		device_create(cls, NULL, MKDEV(scull_major, scull_minor+i), NULL, "scull%d", i);
 	}
+	dev += scull_pipe_init(MKDEV(scull_major, scull_minor+ scull_nr_devs));
+
 
 	return 0;
 
@@ -118,6 +122,7 @@ static int __init scull_init(void) {
 
 static void __exit scull_exit(void) {
 	_scull_cleanup_module();
+	scull_pipe_exit();
 }
 
 module_init(scull_init);

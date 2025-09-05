@@ -59,6 +59,7 @@ int __init scull_debugfs_init(void)
     memset(last_cmd, '\0', sizeof(last_cmd));
     counter = 0;
     debugfs_create_u32("counter", 0644, debugfs_root, &counter);
+    // NULL parameter is inode->i_private in open method
     debugfs_create_file("last_cmd", 0644, debugfs_root, NULL, &scull_debugfs_ops);
     pr_info("scull: /sys/kernel/debug/scull/{counter,last_cmd} created");
     return 0;

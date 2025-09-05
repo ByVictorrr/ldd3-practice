@@ -20,4 +20,6 @@ struct scull_pipe{
 };
 
 
+int scull_pipe_init(dev_t fist_dev);
+void scull_pipe_exit(void);
 #endif //LDD3_PRACTICE_SCULL_PIPE_H
