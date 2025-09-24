@@ -7,6 +7,7 @@
 #include <linux/fs.h>
 #include "scull.h"
 #include "scull_pipe.h"
+#include "scull_access_control.h"
 
 
 MODULE_LICENSE("GPL");
@@ -100,7 +101,7 @@ static int __init scull_init(void) {
 	struct scull_dev *device;
 
 	// create class at /sys/class/scull
-	cls = class_create(THIS_MODULE, "scull");
+	cls = class_create("scull");
 	for (i=0; i<scull_nr_devs; i++)
 	{
 		device = &(scull_devices[i]);
@@ -109,7 +110,9 @@ static int __init scull_init(void) {
 		// uevent that udev uses to create /dev/scull{i}
 		device_create(cls, NULL, MKDEV(scull_major, scull_minor+i), NULL, "scull%d", i);
 	}
-	dev += scull_pipe_init(MKDEV(scull_major, scull_minor+ scull_nr_devs));
+	dev = MKDEV(scull_major, scull_minor+ scull_nr_devs);
+	dev += scull_pipe_init(dev);
+	dev += scull_access_init(dev);
 
 
 	return 0;
@@ -123,6 +126,7 @@ static int __init scull_init(void) {
 static void __exit scull_exit(void) {
 	_scull_cleanup_module();
 	scull_pipe_exit();
+	scull_access_cleanup();
 }
 
 module_init(scull_init);

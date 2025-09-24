@@ -1,7 +1,6 @@
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/proc_fs.h>
-#define
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Victor Delaplaine");
 MODULE_DESCRIPTION("Scull_proc");

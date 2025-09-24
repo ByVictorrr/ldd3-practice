@@ -28,12 +28,11 @@ int scull_qset = SCULL_QSET;
 module_param(scull_qset, int, 0444);
 MODULE_PARM_DESC(scull_qset, "How large should the qset be?");
 
-int scull_quantum = SCULL_QSET;
+int scull_quantum = SCULL_QUANTUM;
 module_param(scull_quantum, int, 0444);
 MODULE_PARM_DESC(scull_quantum, "How large should the quantum be?");
 
 
-extern struct file_operations scull_fops;  // from scull.c
 struct class * cls;
 struct scull_dev *scull_devices;
 static void scull_setup_cdev(struct scull_dev *dev, int index)
@@ -98,14 +97,17 @@ static int __init scull_init(void) {
 	struct scull_dev *device;
 
 	// create class at /sys/class/scull
-	cls = class_create(THIS_MODULE, "scull");
+	cls = class_create("scull");
 	for (i=0; i<scull_nr_devs; i++)
 	{
-		device = &(scull_devices[i]);
+		device = &scull_devices[i];
+		device->quantum = scull_quantum;
+		device->qset    = scull_qset;
+		device->size    = 0;
+		device->data    = NULL;
 		sema_init(&device->sem, 1);
 		scull_setup_cdev(device, i);
-		// uevent that udev uses to create /dev/scull{i}
-		device_create(cls, NULL, MKDEV(scull_major, scull_minor+i), NULL, "scull%d", i);
+		device_create(cls, NULL, MKDEV(scull_major, scull_minor + i), NULL, "scull%d", i);
 	}
 
 	return 0;

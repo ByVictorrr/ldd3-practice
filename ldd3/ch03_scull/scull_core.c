@@ -13,7 +13,7 @@ int scull_dev_reset(struct scull_dev *dev)
     for (curr=dev->data; curr; curr=next)
     {
         if (curr->data){
-            for (i=0; dev->qset; i++)
+            for (i=0; i < dev->qset; i++)
             {
                 /* Free the ith Quantum */
                 if (curr->data[i])
@@ -24,6 +24,7 @@ int scull_dev_reset(struct scull_dev *dev)
             }
             next=curr->next;
             kfree(curr);
+
         }
 
     }
@@ -40,10 +41,12 @@ int scull_open(struct inode *inode, struct file *filp)
     filp->private_data = device; // to be used in other callbacks
     /* Special case if opened for write only: reset device */
     if ((filp->f_flags & O_ACCMODE) == O_WRONLY)
+    {
         if (down_interruptible(&device->sem))
             return -ERESTARTSYS;
         scull_dev_reset(device);
         up(&device->sem);
+    }
     return 0;
 }
 int scull_release(struct inode *inode,  struct file *filp){return 0;}
@@ -51,18 +54,21 @@ int scull_release(struct inode *inode,  struct file *filp){return 0;}
 struct scull_qset *scull_find_item(struct scull_dev *dev, int item)
 {
     int n = item;
-    /* When the first node in ll is NULL */
-    if (!dev->data)
-        dev->data = kmalloc(sizeof(struct scull_qset), GFP_KERNEL );
-        if (!dev->data) return NULL;
-
     struct scull_qset *curr = dev->data;
+    /* When the first node in ll is NULL */
+    if (!curr)
+    {
+        curr = kzalloc(sizeof(struct scull_qset), GFP_KERNEL );
+        if (!curr) return NULL;
+        dev->data = curr;
+    }
+
     while (--n > 0)
     {
-        if (!curr)
+        if (!curr->next)
         {
-            curr = kmalloc(sizeof(struct scull_qset), GFP_KERNEL );
-            if (!curr) return NULL;
+            curr->next = kzalloc(sizeof(struct scull_qset), GFP_KERNEL );
+            if (!curr->next) return NULL;
         }
         curr = curr->next;
 
@@ -142,15 +148,15 @@ ssize_t scull_write(struct file *filp, const char __user *buf, size_t count, lof
     if (!qptr->data)
     {
         /* Allocate a qset array*/
-        qptr->data = kmalloc(qset* sizeof(char *), GFP_KERNEL);
+        qptr->data = kcalloc(qset, sizeof(char *), GFP_KERNEL);
         if (!qptr->data) goto out;
-        memset(qptr->data, 0, qset* sizeof(char *));
     }
     /* allocate the specific quantum at [s_pos] if not present */
     if (!qptr->data[s_pos])
     {
         qptr->data[s_pos] = kmalloc(quantum, GFP_KERNEL);
         if (!qptr->data[s_pos]) goto out;
+        memset(qptr->data[s_pos], 0, dev->quantum);
     }
 
     /* limit read to this quantum's end */
@@ -198,7 +204,6 @@ loff_t scull_llseek(struct file *filp, loff_t off, int whence)
 }
 long scull_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
-    struct scull_dev * dev = filp->private_data;
     long retval;
     int q;
     if (_IOC_TYPE(cmd) != SCULL_IOC_MAGIC)
@@ -229,7 +234,7 @@ long scull_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
     return retval;
 }
 
-struct file_operations scull_fops ={
+const struct file_operations scull_fops ={
     .owner = THIS_MODULE,
     .open = scull_open,
     .release = scull_release,

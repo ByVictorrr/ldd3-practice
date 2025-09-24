@@ -240,3 +240,12 @@ KDIR=/lib/modules/\$(uname -r)/build make
 
 ---
 
+
+-enable-kvm -m 2G -kernel /boot/vmlinuz-linux-custom -initrd /boot/initramfs-6.16.0-MANJARO.img -append "console=ttyS0,115200 earlycon=ttyS0,115200 nokaslr kgdboc=ttyS1,115200 kgdbwait ds=nocloud;seedfrom=/dev/sr0/ root=/dev/vda1 rw rootfstype=ext4 rootwait" -nographic -monitor none -serial telnet:127.0.0.1:6601,server,nowait -serial tcp:127.0.0.1:5551,server=on,nowait -drive if=virtio,file=/home/victord/CLionProjects/ldd3-practice/qemu-image/noble-server-cloudimg-amd64.img,format=qcow2 -cdrom /home/victord/CLionProjects/ldd3-practice/qemu-image/seed.iso
+
+
+
+# This scans your build tree and loads symbols for the kernel and loaded modules:
+lx-symbols
+# See what’s loaded:
+lx-lsmod

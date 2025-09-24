@@ -5,7 +5,7 @@
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Jiffies");
-MODULE_DESCRIPTION("Using Jiffies module demo");
+MODULE_DESCRIPTION("Using Jiffies, and tsc module demo");
 
 static int __init jiffies_init(void)
 {

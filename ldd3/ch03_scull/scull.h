@@ -38,7 +38,7 @@ struct scull_dev{
 
 };
 
-extern struct file_operations scull_fops;  // used by main.c
+extern const struct file_operations scull_fops;  // used by main.c
 
 int scull_dev_reset(struct scull_dev *);
 int scull_open(struct inode *, struct file *);

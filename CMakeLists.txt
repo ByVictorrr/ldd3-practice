@@ -9,6 +9,7 @@ set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
 execute_process(COMMAND uname -r
         OUTPUT_VARIABLE KREL
         OUTPUT_STRIP_TRAILING_WHITESPACE)
+set(KREL 6.6.103)
 set(KDIR "/lib/modules/${KREL}/build" CACHE PATH "Kernel build dir")
 
 set(KHDRS
@@ -20,10 +21,7 @@ set(KHDRS
         ${KDIR}/arch/x86/include/generated
         ${KDIR}/arch/x86/include/uapi
 )
-add_library(kernel_headers INTERFACE
-        ldd3/ch04_debug/debug.h
-        ldd3/ch06_advanced_char/scull_pipe.h)
-target_include_directories(kernel_headers SYSTEM INTERFACE
+include_directories(
         ${KDIR}/include
         ${KDIR}/include/generated
         ${KDIR}/include/uapi
@@ -123,7 +121,7 @@ function(kmod_target NAME)
     get_filename_component(_mod_srcdir "${CMAKE_CURRENT_SOURCE_DIR}" ABSOLUTE)
     target_include_directories(${NAME}_index PRIVATE "${_mod_srcdir}")
 
-    target_link_libraries(${NAME}_index PRIVATE kernel_headers)
+    target_link_libraries(${NAME}_index PRIVATE KH)
     target_compile_definitions(${NAME}_index PRIVATE __KERNEL__ MODULE KBUILD_MODNAME=\"${NAME}\")
 
     # Convenience targets
@@ -131,7 +129,7 @@ function(kmod_target NAME)
             COMMAND sudo /sbin/insmod "${STAGE}/${NAME}.ko" || true
             DEPENDS ${NAME})
     add_custom_target(${NAME}-rmmod
-            COMMAND sudo /sbin/rmmod "${NAME}" || true)
+            COMMAND sudo /sbin/rmmod -f "${NAME}" || true)
     add_custom_target(${NAME}-dmesg
             COMMAND dmesg --color=always | tail -n 60)
     add_custom_target(${NAME}-install
@@ -148,4 +146,5 @@ add_subdirectory(ldd3/ch03_scull)
 add_subdirectory(ldd3/ch04_debug)
 add_subdirectory(ldd3/ch05_concurrency)
 add_subdirectory(ldd3/ch06_advanced_char)
+add_subdirectory(ldd3/ch07_timers)
 

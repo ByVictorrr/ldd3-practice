@@ -40,7 +40,7 @@ static int __init init_compl(void){
 		return result;
 	}
     // create class at /sys/class/scull
-	cls = class_create(THIS_MODULE, "rwsem");
+	cls = class_create("rwsem");
 	// associate the cdev with file operations
 	cdev_init(&rwsem_cdev, &fops);
 	rwsem_cdev.owner = THIS_MODULE;

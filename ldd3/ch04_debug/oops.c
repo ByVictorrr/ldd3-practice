@@ -6,7 +6,7 @@ MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Oops");
 MODULE_DESCRIPTION("Faulty module demo");
 
-static int __init faulty_init(void)
+static int __init jit_init(void)
 {
     pr_info("faulty: loading\n");
 
@@ -16,10 +16,10 @@ static int __init faulty_init(void)
     return 0;
 }
 
-static void __exit faulty_exit(void)
+static void __exit jit_exit(void)
 {
     pr_info("faulty: unloading\n");
 }
 
-module_init(faulty_init);
-module_exit(faulty_exit);
+module_init(jit_init);
+module_exit(jit_exit);

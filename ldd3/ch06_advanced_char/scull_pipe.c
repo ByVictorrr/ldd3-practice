@@ -276,7 +276,7 @@ int scull_pipe_init(dev_t first_dev)
         return result;
     }
     // create class at /sys/class/scull
-    pipe_cls = class_create(THIS_MODULE, "scullp");
+    pipe_cls = class_create("scullp");
     struct scull_pipe *p;
     for (i = 0; i < scull_p_nr_devs; i++)
     {
