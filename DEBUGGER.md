@@ -77,7 +77,7 @@ Save & exit.
 ## 4) Build Kernel + Modules + GDB Sripts
 
 ```bash
-make O=~/kernels/build -j"$(nproc)" bzImage modules scripts_gdb
+make O=~/kernels/build -j"$(nproc)" scripts_gdb bzImage modules
 ```
 
 Artifacts:

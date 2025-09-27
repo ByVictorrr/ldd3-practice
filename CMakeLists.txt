@@ -19,6 +19,22 @@ set(SCP_ARGS
         -P 2222
         -O           # force legacy scp protocol (Dropbear-friendly)
 )
+set(QEMU_SH "${CMAKE_SOURCE_DIR}/toolchain/qemu.sh")
+if (NOT EXISTS "${QEMU_SH}")
+    message(FATAL_ERROR "qemu.sh not found at: ${QEMU_SH}")
+endif()
+
+# Idempotent: qemu.sh should return success if the guest is already up
+
+add_custom_target(qemu-up
+        # COMMAND bash -lc "pkill -9 qemu; nohup '${QEMU_SH}' >/tmp/qemu.log 2>&1 </dev/null &; sleep 3"
+        COMMAND bash -lc "pkill -9 qemu || true"
+        COMMAND bash -lc "nohup '${QEMU_SH}' >/tmp/qemu.log 2>&1 </dev/null &"
+        COMMAND bash -lc "sleep 3"
+        USES_TERMINAL
+        VERBATIM
+        COMMENT "Start QEMU in background (non-blocking)"
+)
 # Path to the *running* kernel's build dir (headers + kbuild)
 execute_process(COMMAND uname -r
         OUTPUT_VARIABLE KREL
@@ -142,50 +158,41 @@ function(kmod_target NAME)
     target_compile_definitions(${NAME}_index PRIVATE __KERNEL__ MODULE KBUILD_MODNAME=\"${NAME}\")
 
     # Convenience targets
-    # Fixed ssh/scp commands to the QEMU guest
-    # insmod: push to /tmp, then insmod (print dmesg on failure)
-    # insmod: push .ko, then insmod in guest; on failure, show dmesg and fail
-    # insmod: push .ko, then insmod in guest; on failure, show dmesg and fail
-    # insmod: push .ko, then insmod; on failure, try to print logs and fail
-    # insmod: push, try to load; on failure print logs and FAIL the target
-    # insmod: push, then load; on failure print logs and FAIL the target
     add_custom_target(${NAME}-insmod
+            DEPENDS qemu-up ${NAME}
             COMMAND ${SCP_BIN} ${SCP_ARGS} "${STAGE}/${NAME}.ko" root@localhost:/tmp/${NAME}.ko
-            COMMAND ${SSH_BIN} ${SSH_ARGS}
-            "insmod /tmp/${NAME}.ko || { (sudo dmesg || dmesg) | tail -n 200; false; }"
-            DEPENDS ${NAME}
+            COMMAND ${SSH_BIN} ${SSH_ARGS} "insmod /tmp/${NAME}.ko || dmesg | tail -n 200"
             USES_TERMINAL
             VERBATIM
             COMMENT "insmod ${NAME} on guest"
     )
 
-    # rmmod: ignore if not present
     add_custom_target(${NAME}-rmmod
+            DEPENDS qemu-up                        # ← ensure QEMU first
             COMMAND ${SSH_BIN} ${SSH_ARGS} "rmmod -f ${NAME} || true"
             USES_TERMINAL
             VERBATIM
             COMMENT "rmmod ${NAME} on guest"
     )
 
-    # dmesg: use your working pipeline
     add_custom_target(${NAME}-dmesg
+            DEPENDS qemu-up
             COMMAND ${SSH_BIN} ${SSH_ARGS} "sudo dmesg | tail -n 200"
             USES_TERMINAL
             VERBATIM
             COMMENT "kernel messages (guest)"
     )
 
-    # install into guest /lib/modules/$(uname -r)/extra and depmod
-    # NOTE: use $$ so $ reaches the remote shell for expansion
     add_custom_target(${NAME}-install
+            DEPENDS qemu-up ${NAME}
             COMMAND ${SCP_BIN} ${SCP_ARGS} "${STAGE}/${NAME}.ko" root@localhost:/tmp/${NAME}.ko
             COMMAND ${SSH_BIN} ${SSH_ARGS}
             "uname_r=\$$(uname -r); mkdir -p /lib/modules/\$${uname_r}/extra && cp -f /tmp/${NAME}.ko /lib/modules/\$${uname_r}/extra/${NAME}.ko && depmod \$${uname_r} || true"
-            DEPENDS ${NAME}
             USES_TERMINAL
             VERBATIM
             COMMENT "install ${NAME} into guest /lib/modules/.../extra"
     )
+
 endfunction()
 # Bring in subprojects (each chapter)
 add_subdirectory(ldd3/ch02_hello)
