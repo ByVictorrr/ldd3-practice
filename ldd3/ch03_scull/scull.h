@@ -47,5 +47,6 @@ ssize_t scull_read(struct file *, char __user *, size_t, loff_t *);
 ssize_t scull_write(struct file *, const char __user *, size_t, loff_t *);
 loff_t scull_llseek(struct file *, loff_t, int );
 long scull_ioctl(struct file *, unsigned int, unsigned long );
+struct scull_qset *scull_find_item(struct scull_dev *dev, int item);
 #endif
 

@@ -1,5 +1,6 @@
 #include <linux/fcntl.h>
 #include <linux/fs.h>
+#include <linux/uaccess.h>
 #include <linux/container_of.h>
 #include "scull.h"
 #include "scull_ioctl.h"
