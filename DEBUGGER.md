@@ -340,3 +340,10 @@ In CLion/GDB:
 * Optional CLion/GDB setup
 
 If you want, I can hand you a small Makefile that automates sections **5–11** (rebuild initramfs + boot with one command).
+
+## Debugger
+1. kmod-gdb-break target
+2. run kgdb remote debug
+3. (gdb) b scull_open
+4. press debugger play
+5. echo hi > /dev/scull0

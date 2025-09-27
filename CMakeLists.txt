@@ -28,10 +28,10 @@ endif()
 
 add_custom_target(qemu-up
         # COMMAND bash -lc "pkill -9 qemu; nohup '${QEMU_SH}' >/tmp/qemu.log 2>&1 </dev/null &; sleep 3"
-        COMMAND bash -lc "pkill -9 qemu || true"
-        COMMAND bash -lc "nohup '${QEMU_SH}' >/tmp/qemu.log 2>&1 </dev/null &"
+        COMMAND bash -lc "tmux kill-session -t ldd3-qemu || true"
+        # COMMAND bash -lc " nohup '${QEMU_SH}' >/tmp/qemu.log 2>&1 </dev/null &"
+        COMMAND tmux new-session -d -s ldd3-qemu "/home/victord/git/ldd3-practice/toolchain/qemu.sh > /tmp/qemu.log 2>&1"
         COMMAND bash -lc "sleep 3"
-        USES_TERMINAL
         VERBATIM
         COMMENT "Start QEMU in background (non-blocking)"
 )
@@ -183,14 +183,13 @@ function(kmod_target NAME)
             COMMENT "kernel messages (guest)"
     )
 
-    add_custom_target(${NAME}-install
-            DEPENDS qemu-up ${NAME}
-            COMMAND ${SCP_BIN} ${SCP_ARGS} "${STAGE}/${NAME}.ko" root@localhost:/tmp/${NAME}.ko
-            COMMAND ${SSH_BIN} ${SSH_ARGS}
-            "uname_r=\$$(uname -r); mkdir -p /lib/modules/\$${uname_r}/extra && cp -f /tmp/${NAME}.ko /lib/modules/\$${uname_r}/extra/${NAME}.ko && depmod \$${uname_r} || true"
+    add_custom_target(${NAME}-gdb-break
+            DEPENDS ${NAME}-insmod
+            COMMAND ${SSH_BIN} ${SSH_ARGS} "echo g > /proc/sysrq-trigger; sleep 2; echo g > /proc/sysrq-trigger"
+            # COMMAND ${SSH_BIN} ${SSH_ARGS} "echo g > /proc/sysrq-trigger"
             USES_TERMINAL
             VERBATIM
-            COMMENT "install ${NAME} into guest /lib/modules/.../extra"
+            COMMENT "insmod ${NAME} then break into KGDB"
     )
 
 endfunction()
