@@ -3,7 +3,6 @@
 #include <linux/container_of.h>
 #include <linux/poll.h>
 #include "scull.h"
-#include "../common_scull/scull_ioctl.h"
 #include "scull_pipe.h"
 
 #include <linux/debugfs.h>
@@ -15,7 +14,7 @@ struct scull_pipe *scull_p_devices;
 static struct class *pipe_cls;
 dev_t scull_p_devno;
 
-ssize_t scull_p_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos)
+static ssize_t scull_p_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos)
 {
     struct scull_pipe *dev = filp->private_data;
     // sleep if someone has the lock
@@ -71,7 +70,7 @@ static int get_spacefree(struct scull_pipe * dev)
         return dev->buffersize -1; // we cant write over rp - 1 comes in
     return  (dev->rp - dev->wp + dev->buffersize) % dev->buffersize - 1;
 }
-int get_write_space(struct scull_pipe *dev, struct file *filp)
+static int get_write_space(struct scull_pipe *dev, struct file *filp)
 {
     while (get_spacefree(dev) == 0) // buffer is full
     {
@@ -93,7 +92,7 @@ int get_write_space(struct scull_pipe *dev, struct file *filp)
     return 0;
 
 }
-ssize_t scull_p_write(struct file *filp, const char __user *buf, size_t count, loff_t *f_pos)
+static ssize_t scull_p_write(struct file *filp, const char __user *buf, size_t count, loff_t *f_pos)
 {
     struct scull_pipe *dev = filp->private_data;
     int result;
@@ -136,9 +135,24 @@ ssize_t scull_p_write(struct file *filp, const char __user *buf, size_t count, l
     return count;
 }
 
-unsigned int scull_p_poll(struct file *filp, poll_table *wait)
+static unsigned int scull_p_poll(struct file *filp, poll_table *wait)
 {
-    // function used by the kernel as a condition when mask != 0 to break out of wait queue
+    /*
+     * poll_wait(filp, &dev->inq/outq, wait) does NOT sleep.
+     *
+     * What it really does:
+     *   - If 'wait' is non-NULL (the "arming" pass), it calls the poll_table->qproc
+     *     (usually __pollwait), which links the current task into the given waitqueue.
+     *   - If 'wait' is NULL (the "re-check" pass after a wakeup), poll_wait() is a no-op.
+     *
+     * Sleeping is handled by the poll/select/epoll core in do_poll(), not here.
+     * Our job in ->poll() is only to:
+     *   1. Register the process on waitqueues with poll_wait().
+     *   2. Return a mask of readiness bits (POLLIN/POLLOUT/etc).
+     * If no events are ready (mask == 0), the core will put the task to sleep
+     * until a wake_up_interruptible_poll() is issued on one of the queues.
+    */
+
 
     struct scull_pipe *dev = filp->private_data;
     unsigned int mask = 0;
@@ -157,14 +171,14 @@ unsigned int scull_p_poll(struct file *filp, poll_table *wait)
     up(&dev->sem);
     return mask;
 }
-int scull_p_fasync(int fd, struct file *filp, int on)
+static int scull_p_fasync(int fd, struct file *filp, int on)
 {
     // register/de-register on async queue to be notified when kill_async called
     struct scull_pipe *dev = filp->private_data;
     return fasync_helper(fd, filp, on, &dev->fasync_queue);
 }
 
-int scull_p_open(struct inode *inode, struct file *filp){
+static int scull_p_open(struct inode *inode, struct file *filp){
     struct scull_pipe *device = container_of(inode->i_cdev, struct scull_pipe, cdev);
     filp->private_data = device;
     if (down_interruptible(&device->sem))
@@ -191,7 +205,7 @@ int scull_p_open(struct inode *inode, struct file *filp){
     return nonseekable_open(inode, filp);
 
 }
-int scull_p_release(struct inode *inode,  struct file *filp)
+static int scull_p_release(struct inode *inode,  struct file *filp)
 {
     struct scull_pipe *dev = filp->private_data;
     // remove this filp from async notified filps
@@ -213,14 +227,13 @@ int scull_p_release(struct inode *inode,  struct file *filp)
 
 
 
-struct file_operations scull_pipe_fops ={
+const struct file_operations scull_pipe_fops ={
     .owner = THIS_MODULE,
     .open = scull_p_open,
     .release = scull_p_release,
     .read = scull_p_read,
     .write = scull_p_write,
     .unlocked_ioctl = scull_ioctl,
-    .llseek = no_llseek,
     .poll = scull_p_poll,
     .fasync = scull_p_fasync,
 };
@@ -236,7 +249,6 @@ static int pipe_show(struct seq_file *m, void *v)
         if (down_interruptible(&p->sem))
             return -ERESTARTSYS;
         seq_printf(m, "\nDevice %i: %p\n", i, p);
-        seq_printf(m, "   Queues: %p %p\n", p->inq, p->outq);
         seq_printf(m, "   Buffer: %p to %p (%i bytes)\n", p->start, p->end, p->buffersize);
         seq_printf(m, "   rp %p   wp %p\n", p->rp, p->wp);
         seq_printf(m, "   readers %i   writers %i\n", p->nreaders, p->nwriters);

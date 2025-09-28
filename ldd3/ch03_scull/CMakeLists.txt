@@ -13,8 +13,4 @@ kmod_target(scull
         EXTRA_CFLAGS "-I${COMMON_SCULL_DIR} -Wno-error=misleading-indentation -g -fno-omit-frame-pointer -Wno-error=missing-prototypes" # include headers in cwd
 )
 # path to shared headers
-target_include_directories(scull_index PRIVATE
-        ${CMAKE_SOURCE_DIR}/ldd3/common_scull
-)
-
 add_subdirectory(test)

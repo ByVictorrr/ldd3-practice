@@ -128,11 +128,90 @@ out:
     up(&dev->sem);
     return ret;
 }
+ssize_t scull_write(struct file *filp, const char __user *buf, size_t count, loff_t *f_pos)
+{
+    struct scull_dev *dev = filp->private_data;
+    struct scull_qset *qptr;
+    // itemsize: bytes in one quantum set
+    int quantum = dev->quantum, qset = dev->qset, itemsize = quantum*qset;
+    int item, s_pos, q_pos, rest;
+    ssize_t ret = -ENOMEM;
+    // interruptible sleep
+    if (down_interruptible(&dev->sem))
+        // if interrupted: like a
+            return -ERESTARTSYS;
+    /* Calculate positions */
+    item = (long)*f_pos / itemsize; /* which quantum set? */
+    rest = (long)*f_pos % itemsize; /* offset within the quantum set */
+    s_pos = rest / quantum;  /* index of quantum in the set */
+    q_pos = rest % quantum; /* offset within that quantum */
+    /* Find the quantum set item position ahead */
+    qptr =  scull_find_item(dev, item);
+    if (qptr == NULL)
+    {
+        /* No data to read */
+        goto out;
+    }
+    if (!qptr->data)
+    {
+        /* Allocate a qset array*/
+        qptr->data = kcalloc(qset, sizeof(char *), GFP_KERNEL);
+        if (!qptr->data) goto out;
+    }
+    /* allocate the specific quantum at [s_pos] if not present */
+    if (!qptr->data[s_pos])
+    {
+        qptr->data[s_pos] = kmalloc(quantum, GFP_KERNEL);
+        if (!qptr->data[s_pos]) goto out;
+        memset(qptr->data[s_pos], 0, dev->quantum);
+    }
+
+    /* limit read to this quantum's end */
+    if (count > quantum - q_pos)
+        count = quantum - q_pos;
+    /* Copy data to user space */
+    if (copy_from_user(qptr->data[s_pos] + q_pos, buf, count))
+    {
+        ret = -EFAULT;
+        goto out;
+    }
+    *f_pos = *f_pos + count;
+    ret = count;
+    /* update the device size */
+    if (dev->size < *f_pos)
+    {
+        dev->size = *f_pos;
+
+    }
+    out:
+        up(&dev->sem);
+    return ret;
+}
+loff_t scull_llseek(struct file *filp, loff_t off, int whence)
+{
+    struct scull_dev *dev = filp->private_data;
+    loff_t newpos;
+    switch (whence)
+    {
+    case SEEK_SET:
+        newpos = off;
+        break;
+    case SEEK_CUR:
+        newpos = filp->f_pos + off;
+        break;
+    case SEEK_END:
+        newpos = dev->size;
+        break;
+    default: return -EINVAL;
+    }
+    if (newpos < 0)return -EINVAL;
+    filp->f_pos = newpos;
+    return newpos;
+}
 
 long scull_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
     int q;
-    struct scull_dev * dev = filp->private_data;
     long retval = -EINVAL;
     if (_IOC_TYPE(cmd) != SCULL_IOC_MAGIC || _IOC_NR(cmd) > SCULL_IOC_MAXNR)
         return -ENOTTY;

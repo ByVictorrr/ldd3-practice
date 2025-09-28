@@ -77,7 +77,6 @@ function(kmod_target NAME)
     set(oneValueArgs EXTRA_CFLAGS)
     set(multiValueArgs SOURCES HEADERS)
     cmake_parse_arguments(KMOD "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
-
     if(NOT KMOD_SOURCES)
         message(FATAL_ERROR "kmod_target(${NAME}) requires SOURCES")
     endif()
@@ -85,27 +84,70 @@ function(kmod_target NAME)
     set(STAGE "${CMAKE_BINARY_DIR}/kmods/${NAME}")
     file(MAKE_DIRECTORY "${STAGE}")
 
-    # Symlink sources (and headers if given) into the staging dir
+    # --- Stage sources (absolute or relative); collect dirs for -I ---
     set(COMPONENT_OBJS)
+    set(_seen_dirs "")
+    set(_src_abspaths "")
     foreach(src ${KMOD_SOURCES})
-        get_filename_component(base "${src}" NAME)
-        file(CREATE_LINK "${CMAKE_CURRENT_SOURCE_DIR}/${src}" "${STAGE}/${base}" SYMBOLIC)
-        if(base MATCHES "\\.(c|S)$")
-            string(REGEX REPLACE "\\.(c|S)$" ".o" obj "${base}")
-            list(APPEND COMPONENT_OBJS "${obj}")
+        if(NOT IS_ABSOLUTE "${src}")
+            set(_src_abs "${CMAKE_CURRENT_SOURCE_DIR}/${src}")
         else()
-            message(FATAL_ERROR "Unsupported source: ${base} (expected .c or .S)")
+            set(_src_abs "${src}")
         endif()
+        if(NOT EXISTS "${_src_abs}")
+            message(FATAL_ERROR "Source not found: ${_src_abs}")
+        endif()
+        list(APPEND _src_abspaths "${_src_abs}")
+        get_filename_component(_base "${_src_abs}" NAME)
+        file(CREATE_LINK "${_src_abs}" "${STAGE}/${_base}" SYMBOLIC)
+        if(_base MATCHES "\\.(c|S)$")
+            string(REGEX REPLACE "\\.(c|S)$" ".o" _obj "${_base}")
+            list(APPEND COMPONENT_OBJS "${_obj}")
+        else()
+            message(FATAL_ERROR "Unsupported source: ${_base} (expected .c or .S)")
+        endif()
+        get_filename_component(_dir "${_src_abs}" DIRECTORY)
+        list(APPEND _seen_dirs "${_dir}")
     endforeach()
 
+    # --- Stage headers passed explicitly; collect dirs too ---
+    set(_hdr_abspaths "")
     foreach(hdr ${KMOD_HEADERS})
-        get_filename_component(hbase "${hdr}" NAME)
-        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${hdr}")
-            file(CREATE_LINK "${CMAKE_CURRENT_SOURCE_DIR}/${hdr}" "${STAGE}/${hbase}" SYMBOLIC)
+        if(NOT IS_ABSOLUTE "${hdr}")
+            set(_hdr_abs "${CMAKE_CURRENT_SOURCE_DIR}/${hdr}")
+        else()
+            set(_hdr_abs "${hdr}")
+        endif()
+        if(EXISTS "${_hdr_abs}")
+            list(APPEND _hdr_abspaths "${_hdr_abs}")
+            get_filename_component(_hbase "${_hdr_abs}" NAME)
+            file(CREATE_LINK "${_hdr_abs}" "${STAGE}/${_hbase}" SYMBOLIC)
+            get_filename_component(_hdir "${_hdr_abs}" DIRECTORY)
+            list(APPEND _seen_dirs "${_hdir}")
         endif()
     endforeach()
 
-    # If single-source ${NAME}.c, don't emit ${NAME}-objs
+    # --- OPTIONAL: auto-stage quoted includes if HEADERS wasn’t provided ---
+    if(NOT KMOD_HEADERS)
+        foreach(_src_abs ${_src_abspaths})
+            file(READ "${_src_abs}" _src_text)
+            # find lines like: #include "foo.h"
+            string(REGEX MATCHALL "#[ \t]*include[ \t]*\"([^\"]+)\"" _incs "${_src_text}")
+            foreach(_line ${_incs})
+                string(REGEX REPLACE ".*\"([^\"]+)\".*" "\\1" _inc_name "${_line}")
+                foreach(_d ${_seen_dirs})
+                    if(EXISTS "${_d}/${_inc_name}")
+                        if(NOT EXISTS "${STAGE}/${_inc_name}")
+                            file(CREATE_LINK "${_d}/${_inc_name}" "${STAGE}/${_inc_name}" SYMBOLIC)
+                        endif()
+                        break()
+                    endif()
+                endforeach()
+            endforeach()
+        endforeach()
+    endif()
+
+    # --- Kbuild Makefile: obj-m / -objs ---
     set(KBUILD_CONTENT "obj-m += ${NAME}.o\n")
     string(REPLACE ";" " " COMPONENT_OBJS_JOINED "${COMPONENT_OBJS}")
     if(NOT (KMOD_SOURCES STREQUAL "${NAME}.c" AND "${COMPONENT_OBJS_JOINED}" STREQUAL "${NAME}.o"))
@@ -116,30 +158,21 @@ function(kmod_target NAME)
         endif()
     endif()
 
-    # Add -I for each unique source dir (handy for #include "local.h")
-    set(_seen_dirs "")
+    # --- Compose EXTRA_CFLAGS: add -I for every unique dir we saw ---
+    list(REMOVE_DUPLICATES _seen_dirs)
     set(_src_include_flags "")
-    foreach(src ${KMOD_SOURCES} ${KMOD_HEADERS})
-        get_filename_component(_abs "${CMAKE_CURRENT_SOURCE_DIR}/${src}" ABSOLUTE)
-        get_filename_component(_dir "${_abs}" DIRECTORY)
-        list(FIND _seen_dirs "${_dir}" _idx)
-        if(_idx EQUAL -1)
-            list(APPEND _seen_dirs "${_dir}")
-            string(APPEND _src_include_flags " -I${_dir}")
-        endif()
+    foreach(_d ${_seen_dirs})
+        string(APPEND _src_include_flags " -I${_d}")
     endforeach()
-
     if(KMOD_EXTRA_CFLAGS)
         string(APPEND KBUILD_CONTENT "EXTRA_CFLAGS += ${KMOD_EXTRA_CFLAGS}${_src_include_flags}\n")
     else()
         string(APPEND KBUILD_CONTENT "EXTRA_CFLAGS +=${_src_include_flags}\n")
     endif()
-
     file(WRITE "${STAGE}/Makefile" "${KBUILD_CONTENT}")
 
-    # Always use GNU make for Kbuild
+    # --- Build the module with kbuild ---
     find_program(MAKE_EXECUTABLE NAMES make gmake REQUIRED)
-
     add_custom_command(
             OUTPUT "${STAGE}/${NAME}.ko"
             COMMAND "${MAKE_EXECUTABLE}" -C "${KDIR}" M=${STAGE} modules
@@ -149,15 +182,12 @@ function(kmod_target NAME)
     )
     add_custom_target(${NAME} ALL DEPENDS "${STAGE}/${NAME}.ko")
 
-    # ---- CLion indexing-only dummy (no compile/link) ----
+    # --- CLion indexing target sees the same include dirs ---
     add_library(${NAME}_index STATIC EXCLUDE_FROM_ALL ${KMOD_SOURCES} ${KMOD_HEADERS})
-    get_filename_component(_mod_srcdir "${CMAKE_CURRENT_SOURCE_DIR}" ABSOLUTE)
-    target_include_directories(${NAME}_index PRIVATE "${_mod_srcdir}")
-
-    target_link_libraries(${NAME}_index PRIVATE KH)
+    target_include_directories(${NAME}_index PRIVATE ${_seen_dirs})
     target_compile_definitions(${NAME}_index PRIVATE __KERNEL__ MODULE KBUILD_MODNAME=\"${NAME}\")
 
-    # Convenience targets
+    # --- Convenience targets (unchanged, shortened here) ---
     add_custom_target(${NAME}-insmod
             DEPENDS qemu-up ${NAME}
             COMMAND ${SCP_BIN} ${SCP_ARGS} "${STAGE}/${NAME}.ko" root@localhost:/tmp/${NAME}.ko
@@ -193,6 +223,7 @@ function(kmod_target NAME)
     )
 
 endfunction()
+
 # Bring in subprojects (each chapter)
 add_subdirectory(ldd3/ch02_hello)
 add_subdirectory(ldd3/ch03_scull)

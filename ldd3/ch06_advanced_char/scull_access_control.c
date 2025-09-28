@@ -12,7 +12,7 @@
 static atomic_t scull_single_flag = ATOMIC_INIT(1);
 struct scull_dev scull_single_dev;
 
-int scull_single_open(struct inode *inode, struct file *filp){
+static int scull_single_open(struct inode *inode, struct file *filp){
     struct scull_dev *dev = &scull_single_dev;
     if (!atomic_dec_and_test(&scull_single_flag))
     {
@@ -27,7 +27,7 @@ int scull_single_open(struct inode *inode, struct file *filp){
 
 }
 
-int scull_single_release(struct inode * inode, struct file * filp)
+static int scull_single_release(struct inode * inode, struct file * filp)
 {
     atomic_inc(&scull_single_flag);
     return 0;
@@ -52,7 +52,7 @@ uid_t scull_uid_owner;
 int scull_uid_count = 0;
 
 
-int scull_uid_open(struct inode *inode, struct file *filp)
+static int scull_uid_open(struct inode *inode, struct file *filp)
 {
     struct scull_dev *dev = &scull_uid_dev;
     spin_lock(&scull_uid_lock);
@@ -78,7 +78,7 @@ int scull_uid_open(struct inode *inode, struct file *filp)
 
 }
 
-int scull_uid_release(struct inode *inode, struct file *filp)
+static int scull_uid_release(struct inode *inode, struct file *filp)
 {
     spin_lock(&scull_uid_lock);
     scull_uid_count--;
@@ -104,16 +104,16 @@ static DECLARE_WAIT_QUEUE_HEAD(scull_wuid_wait);
 struct scull_dev scull_wuid_dev;
 
 int scull_wuid_count = 0;
-int scull_wuid_available(void)
+static int scull_wuid_available(void)
 {
     return scull_wuid_count == 0 ||
         scull_wuid_owner == __kuid_val(current->cred->uid) ||
         scull_wuid_owner ==__kuid_val(current->cred->euid) ||
             capable(CAP_DAC_OVERRIDE);
 }
-int scull_wuid_open(struct inode *inode, struct file *filp)
+static int scull_wuid_open(struct inode *inode, struct file *filp)
 {
-    pr_warn("wuid_open: pid=%d euid=%u f=%#x mode=%#lx openers=%d owner=%d\n",
+    pr_warn("wuid_open: pid=%d euid=%u f=%#x mode=%ul openers=%d owner=%d\n",
         current->pid, __kuid_val(current_euid()),
         filp->f_flags, filp->f_mode, scull_wuid_count, scull_wuid_owner);
 
@@ -139,7 +139,7 @@ int scull_wuid_open(struct inode *inode, struct file *filp)
 
 }
 
-int scull_wuid_release(struct inode *inode, struct file *filp)
+static int scull_wuid_release(struct inode *inode, struct file *filp)
 {
     int temp;
     spin_lock(&scull_wuid_lock);
@@ -172,7 +172,7 @@ struct scull_listitem{
     dev_t key;
     struct list_head list;
 };
-struct scull_dev *scull_find_listitem(dev_t key)
+static struct scull_dev *scull_find_listitem(dev_t key)
 {
     struct scull_listitem *item;
     list_for_each_entry(item, &scull_priv_list, list)
@@ -193,7 +193,7 @@ struct scull_dev *scull_find_listitem(dev_t key)
 
     return &item->device;
 }
-int scull_priv_open(struct inode *inode, struct file *filp)
+static int scull_priv_open(struct inode *inode, struct file *filp)
 {
     struct scull_dev *dev;
     dev_t key;
@@ -215,7 +215,7 @@ int scull_priv_open(struct inode *inode, struct file *filp)
     return 0;
 }
 
-int scull_priv_release(struct inode *inode, struct file *filp)
+static int scull_priv_release(struct inode *inode, struct file *filp)
 {
     return 0;
 }
@@ -244,7 +244,7 @@ static struct scull_adev_info
     {"scullpriv", &scull_priv_dev, &scull_priv_fops}
 };
 static struct class *cls;
-void scull_access_setup(dev_t devnum, struct scull_adev_info *devinfo)
+static void scull_access_setup(dev_t devnum, struct scull_adev_info *devinfo)
 {
     struct scull_dev *dev = devinfo->sculldev;
     int err;
