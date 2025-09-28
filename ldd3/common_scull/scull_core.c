@@ -5,6 +5,13 @@
 #include "scull.h"
 #include "scull_ioctl.h"
 
+int scull_major = SCULL_MAJOR;
+int scull_minor = SCULL_MINOR;
+int scull_nr_devs = SCULL_NR_DEVS;
+int scull_qset = SCULL_QSET;
+int scull_quantum = SCULL_QUANTUM;
+
+
 
 int scull_dev_reset(struct scull_dev *dev)
 {
@@ -122,118 +129,124 @@ out:
     return ret;
 }
 
-ssize_t scull_write(struct file *filp, const char __user *buf, size_t count, loff_t *f_pos)
-{
-    struct scull_dev *dev = filp->private_data;
-    struct scull_qset *qptr;
-    // itemsize: bytes in one quantum set
-    int quantum = dev->quantum, qset = dev->qset, itemsize = quantum*qset;
-    int item, s_pos, q_pos, rest;
-    ssize_t ret = -ENOMEM;
-    // interruptible sleep
-    if (down_interruptible(&dev->sem))
-        // if interrupted: like a
-            return -ERESTARTSYS;
-    /* Calculate positions */
-    item = (long)*f_pos / itemsize; /* which quantum set? */
-    rest = (long)*f_pos % itemsize; /* offset within the quantum set */
-    s_pos = rest / quantum;  /* index of quantum in the set */
-    q_pos = rest % quantum; /* offset within that quantum */
-    /* Find the quantum set item position ahead */
-    qptr =  scull_find_item(dev, item);
-    if (qptr == NULL)
-    {
-        /* No data to read */
-        goto out;
-    }
-    if (!qptr->data)
-    {
-        /* Allocate a qset array*/
-        qptr->data = kcalloc(qset, sizeof(char *), GFP_KERNEL);
-        if (!qptr->data) goto out;
-    }
-    /* allocate the specific quantum at [s_pos] if not present */
-    if (!qptr->data[s_pos])
-    {
-        qptr->data[s_pos] = kmalloc(quantum, GFP_KERNEL);
-        if (!qptr->data[s_pos]) goto out;
-        memset(qptr->data[s_pos], 0, dev->quantum);
-    }
-
-    /* limit read to this quantum's end */
-    if (count > quantum - q_pos)
-        count = quantum - q_pos;
-    /* Copy data to user space */
-    if (copy_from_user(qptr->data[s_pos] + q_pos, buf, count))
-    {
-        ret = -EFAULT;
-        goto out;
-    }
-    *f_pos = *f_pos + count;
-    ret = count;
-    /* update the device size */
-    if (dev->size < *f_pos)
-    {
-        dev->size = *f_pos;
-
-    }
-    out:
-        up(&dev->sem);
-        return ret;
-}
-
-loff_t scull_llseek(struct file *filp, loff_t off, int whence)
-{
-    struct scull_dev *dev = filp->private_data;
-    loff_t newpos;
-    switch (whence)
-    {
-        case SEEK_SET:
-            newpos = off;
-            break;
-        case SEEK_CUR:
-            newpos = filp->f_pos + off;
-            break;
-        case SEEK_END:
-            newpos = dev->size;
-            break;
-        default: return -EINVAL;
-    }
-    if (newpos < 0)return -EINVAL;
-    filp->f_pos = newpos;
-    return newpos;
-}
 long scull_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
-    long retval;
     int q;
-    if (_IOC_TYPE(cmd) != SCULL_IOC_MAGIC)
+    struct scull_dev * dev = filp->private_data;
+    long retval = -EINVAL;
+    if (_IOC_TYPE(cmd) != SCULL_IOC_MAGIC || _IOC_NR(cmd) > SCULL_IOC_MAXNR)
         return -ENOTTY;
+    if ((_IOC_DIR(cmd) & (_IOC_WRITE | _IOC_READ)) && !access_ok((void __user *)arg, _IOC_SIZE(cmd)))
+        return -EFAULT;
+
     switch (cmd)
     {
     case SCULL_IOCRESET:
         scull_qset = SCULL_QSET;
         scull_quantum = SCULL_QUANTUM;
         break;
+    /* "Set" value via pointer */
+    case SCULL_IOCSQUANTUM:
+        if (!capable(CAP_SYS_ADMIN))
+        {
+            retval = -EPERM;
+            break;
+        }
+        retval = __get_user(q, (int __user *)arg);
+        scull_quantum = q;
+        break;
     case SCULL_IOCSQSET:
+        if (!capable(CAP_SYS_ADMIN))
+        {
+            retval = -EPERM;
+            break;
+        }
         retval = __get_user(q, (int __user *)arg);
         scull_qset = q;
+        break;
+    /* "Tell" value via arg value */
+    case SCULL_IOCTQUANTUM:
+        if (!capable(CAP_SYS_ADMIN))
+        {
+            retval = -EPERM;
+            break;
+        }
+        scull_quantum = arg;
+        break;
+    case SCULL_IOCTQSET:
+        if (!capable(CAP_SYS_ADMIN))
+        {
+            retval = -EPERM;
+            break;
+        }
+        scull_qset = arg;
+        break;
+    /* "Get" value via pointer */
+    case SCULL_IOCGQUANTUM:
+
+        retval = __put_user(scull_quantum, (int __user *)arg);
         break;
     case SCULL_IOCGQSET:
         retval = __put_user(scull_qset, (int __user *)arg);
         break;
-    case SCULL_IOCSQUANTUM:
-        retval = __get_user(q, (int __user *)arg);
-        scull_quantum = q;
+    /* "Query" value via return value */
+    case SCULL_IOCQQUANTUM:
+
+        retval = scull_quantum;
         break;
-    case SCULL_IOCGQUANTUM:
-        retval = __put_user(scull_quantum, (int __user *)arg);
+    case SCULL_IOCQQSET:
+        retval = scull_qset;
+        break;
+    /* "eXchange" value - atomic get and set */
+    case SCULL_IOCXQUANTUM:
+        if (!capable(CAP_SYS_ADMIN))
+        {
+            retval = -EPERM;
+            break;
+        }
+        q = scull_quantum;
+        retval = __get_user(scull_quantum, (int __user *)arg);
+        if (retval == 0)
+            retval = __put_user(q, (int __user *)arg);
+        break;
+    case SCULL_IOCXQSET:
+        if (!capable(CAP_SYS_ADMIN))
+        {
+            retval = -EPERM;
+            break;
+        }
+        q = scull_qset;
+        retval = __get_user(scull_qset, (int __user *)arg);
+        if (retval == 0)
+            retval = __put_user(q, (int __user *)arg);
+        break;
+    /* "sHift" - toggling behavor*/
+    case SCULL_IOCHQUANTUM:
+        if (!capable(CAP_SYS_ADMIN))
+        {
+            retval = -EPERM;
+            break;
+        }
+        q = scull_quantum;
+        scull_quantum = arg;
+        retval = q;
+        break;
+    case SCULL_IOCHQSET:
+        if (!capable(CAP_SYS_ADMIN))
+        {
+            retval = -EPERM;
+            break;
+        }
+        q = scull_quantum;
+        scull_quantum = arg;
+        retval = q;
         break;
     default:
-        return -ENOTTY;
     }
     return retval;
 }
+
+
 
 const struct file_operations scull_fops ={
     .owner = THIS_MODULE,

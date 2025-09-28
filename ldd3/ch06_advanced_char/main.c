@@ -30,7 +30,7 @@ int scull_qset = SCULL_QSET;
 module_param(scull_qset, int, 0444);
 MODULE_PARM_DESC(scull_qset, "How large should the qset be?");
 
-int scull_quantum = SCULL_QSET;
+int scull_quantum = SCULL_QUANTUM;
 module_param(scull_quantum, int, 0444);
 MODULE_PARM_DESC(scull_quantum, "How large should the quantum be?");
 
@@ -105,6 +105,10 @@ static int __init scull_init(void) {
 	for (i=0; i<scull_nr_devs; i++)
 	{
 		device = &(scull_devices[i]);
+		device->quantum = scull_quantum;
+		device->qset = scull_qset;
+		device->size = 0;
+		device->data = NULL;
 		sema_init(&device->sem, 1);
 		scull_setup_cdev(device, i);
 		// uevent that udev uses to create /dev/scull{i}

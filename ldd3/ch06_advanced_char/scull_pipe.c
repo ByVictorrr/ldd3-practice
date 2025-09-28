@@ -3,7 +3,7 @@
 #include <linux/container_of.h>
 #include <linux/poll.h>
 #include "scull.h"
-#include "scull_ioctl.h"
+#include "../common_scull/scull_ioctl.h"
 #include "scull_pipe.h"
 
 #include <linux/debugfs.h>

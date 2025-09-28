@@ -2,7 +2,7 @@
 #include <linux/fs.h>
 #include <linux/container_of.h>
 #include "scull.h"
-#include "scull_ioctl.h"
+#include "../common_scull/scull_ioctl.h"
 
 
 int scull_dev_reset(struct scull_dev *dev)
@@ -40,10 +40,12 @@ int scull_open(struct inode *inode, struct file *filp)
     filp->private_data = device; // to be used in other callbacks
     /* Special case if opened for write only: reset device */
     if ((filp->f_flags & O_ACCMODE) == O_WRONLY)
+    {
         if (down_interruptible(&device->sem))
             return -ERESTARTSYS;
         scull_dev_reset(device);
         up(&device->sem);
+    }
     return 0;
 }
 int scull_release(struct inode *inode,  struct file *filp){return 0;}
@@ -51,24 +53,28 @@ int scull_release(struct inode *inode,  struct file *filp){return 0;}
 struct scull_qset *scull_find_item(struct scull_dev *dev, int item)
 {
     int n = item;
-    /* When the first node in ll is NULL */
-    if (!dev->data)
-        dev->data = kmalloc(sizeof(struct scull_qset), GFP_KERNEL );
-        if (!dev->data) return NULL;
-
     struct scull_qset *curr = dev->data;
+    /* When the first node in ll is NULL */
+    if (!curr)
+    {
+        curr = kzalloc(sizeof(struct scull_qset), GFP_KERNEL );
+        if (!curr) return NULL;
+        dev->data = curr;
+    }
+
     while (--n > 0)
     {
-        if (!curr)
+        if (!curr->next)
         {
-            curr = kmalloc(sizeof(struct scull_qset), GFP_KERNEL );
-            if (!curr) return NULL;
+            curr->next = kzalloc(sizeof(struct scull_qset), GFP_KERNEL );
+            if (!curr->next) return NULL;
         }
         curr = curr->next;
 
     }
     return curr;
 }
+
 
 ssize_t scull_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos)
 {
@@ -81,7 +87,7 @@ ssize_t scull_read(struct file *filp, char __user *buf, size_t count, loff_t *f_
     // interruptible sleep
     if (down_interruptible(&dev->sem))
         // if interrupted: like a
-        return -ERESTARTSYS;
+            return -ERESTARTSYS;
     if (*f_pos >= dev->size) // EOF
         goto out;
     if (*f_pos + count > dev->size)
@@ -110,11 +116,10 @@ ssize_t scull_read(struct file *filp, char __user *buf, size_t count, loff_t *f_
     *f_pos = *f_pos + count;
     ret = count;
 
-out:
-    up(&dev->sem);
+    out:
+        up(&dev->sem);
     return ret;
 }
-
 ssize_t scull_write(struct file *filp, const char __user *buf, size_t count, loff_t *f_pos)
 {
     struct scull_dev *dev = filp->private_data;
@@ -125,8 +130,7 @@ ssize_t scull_write(struct file *filp, const char __user *buf, size_t count, lof
     ssize_t ret = -ENOMEM;
     // interruptible sleep
     if (down_interruptible(&dev->sem))
-        // if interrupted: like a
-            return -ERESTARTSYS;
+        return -ERESTARTSYS;  // if interrupted: like a ctrl-c signal
     /* Calculate positions */
     item = (long)*f_pos / itemsize; /* which quantum set? */
     rest = (long)*f_pos % itemsize; /* offset within the quantum set */
@@ -142,15 +146,15 @@ ssize_t scull_write(struct file *filp, const char __user *buf, size_t count, lof
     if (!qptr->data)
     {
         /* Allocate a qset array*/
-        qptr->data = kmalloc(qset* sizeof(char *), GFP_KERNEL);
+        qptr->data = kcalloc(qset, sizeof(char *), GFP_KERNEL);
         if (!qptr->data) goto out;
-        memset(qptr->data, 0, qset* sizeof(char *));
     }
     /* allocate the specific quantum at [s_pos] if not present */
     if (!qptr->data[s_pos])
     {
         qptr->data[s_pos] = kmalloc(quantum, GFP_KERNEL);
         if (!qptr->data[s_pos]) goto out;
+        memset(qptr->data[s_pos], 0, dev->quantum);
     }
 
     /* limit read to this quantum's end */
@@ -172,9 +176,8 @@ ssize_t scull_write(struct file *filp, const char __user *buf, size_t count, lof
     }
     out:
         up(&dev->sem);
-        return ret;
+    return ret;
 }
-
 loff_t scull_llseek(struct file *filp, loff_t off, int whence)
 {
     struct scull_dev *dev = filp->private_data;

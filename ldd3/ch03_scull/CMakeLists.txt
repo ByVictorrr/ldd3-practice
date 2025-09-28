@@ -1,9 +1,20 @@
 cmake_minimum_required(VERSION 3.21)
 project(scull NONE)
+set(COMMON_SCULL_DIR "${CMAKE_SOURCE_DIR}/ldd3/common_scull")
+
 kmod_target(scull
-        SOURCES main.c scull_core.c
-        HEADERS scull.h scull_ioctl.h
+        SOURCES
+            main.c
+            ${COMMON_SCULL_DIR}/scull_core.c
+        HEADERS
+            ${COMMON_SCULL_DIR}/scull.h
+            ${COMMON_SCULL_DIR}/scull_ioctl.h
         # EXTRA_CFLAGS "-Wall -Wextra -DDEBUG"
-        EXTRA_CFLAGS "-I${CMAKE_CURRENT_SOURCE_DIR} -Wno-error=misleading-indentation -g -fno-omit-frame-pointer -Wno-error=missing-prototypes" # include headers in cwd
+        EXTRA_CFLAGS "-I${COMMON_SCULL_DIR} -Wno-error=misleading-indentation -g -fno-omit-frame-pointer -Wno-error=missing-prototypes" # include headers in cwd
 )
+# path to shared headers
+target_include_directories(scull_index PRIVATE
+        ${CMAKE_SOURCE_DIR}/ldd3/common_scull
+)
+
 add_subdirectory(test)

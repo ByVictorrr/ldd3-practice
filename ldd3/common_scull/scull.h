@@ -9,7 +9,7 @@
 #define SCULL_MINOR 0
 #define SCULL_NR_DEVS 4
 #define SCULL_QSET 1000
-# define SCULL_QUANTUM 4096
+#define SCULL_QUANTUM 4096
 
 extern int scull_major;
 extern int scull_minor;

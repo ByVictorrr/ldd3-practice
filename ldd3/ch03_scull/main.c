@@ -12,23 +12,18 @@ MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Victor Delaplaine");
 MODULE_DESCRIPTION("Scull");
 MODULE_VERSION("0.2");
-int scull_major = SCULL_MAJOR;
 module_param(scull_major, int, 0444);
 MODULE_PARM_DESC(scull_major, "Major number");
 
-int scull_minor = SCULL_MINOR;
 module_param(scull_minor, int, 0444);
 MODULE_PARM_DESC(scull_minor, "Minor number");
 
-int scull_nr_devs = SCULL_NR_DEVS;
 module_param(scull_nr_devs, int, 0444);
 MODULE_PARM_DESC(scull_nr_devs, "Number of SCULL Devices");
 
-int scull_qset = SCULL_QSET;
 module_param(scull_qset, int, 0444);
 MODULE_PARM_DESC(scull_qset, "How large should the qset be?");
 
-int scull_quantum = SCULL_QUANTUM;
 module_param(scull_quantum, int, 0444);
 MODULE_PARM_DESC(scull_quantum, "How large should the quantum be?");
 
