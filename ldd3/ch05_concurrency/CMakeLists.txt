@@ -12,3 +12,9 @@ kmod_target(scull_rwsem
         # EXTRA_CFLAGS "-Wall -Wextra -DDEBUG"
         EXTRA_CFLAGS "-I${CMAKE_CURRENT_SOURCE_DIR}" # include headers in cwd
 )
+kmod_target(spin_locks
+        SOURCES spin_locks.c
+        HEADERS
+        # EXTRA_CFLAGS "-Wall -Wextra -DDEBUG"
+        EXTRA_CFLAGS "-I${CMAKE_CURRENT_SOURCE_DIR}" # include headers in cwd
+)

@@ -1,24 +1,28 @@
 // SPDX-License-Identifier: GPL-2.0
+
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
+#include <linux/softirq.h>
+#include <linux/timer.h>
+#include <linux/container_of.h>
 
-MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Oops");
-MODULE_DESCRIPTION("Faulty module demo");
+#define JIT_ASYNC_LOOPS 5
 struct proc_dir_entry *proc_entry;
 int delay = 5;
-enum jit_files {
-    JIT_BUSY,
+enum jit_files { JIT_BUSY,
     JIT_SCHED,
     JIT_QUEUE,
     JIT_SCHEDTO
 };
 
 
-module_param(delay, int, 0444);
+module_param(delay, int, 0644);
 MODULE_PARM_DESC(delay, "How long to delay the module to show");
+MODULE_AUTHOR("Victor Delaplaine");
+MODULE_LICENSE("Dual BSD/GPL");
+MODULE_DESCRIPTION("Example of showing time delays can be handled in kernel");
 /*
  * This function prints one line of data, after sleeping one second.
  * It can sleep in different ways, according to the data pointer
@@ -73,7 +77,7 @@ static const struct proc_ops jit_fn_fops = {
 /*
  * This file, on the other hand, returns the current time forever
  */
-int jit_currentime_show(struct seq_file *m, void *v)
+static int jit_currentime_show(struct seq_file *m, void *v)
 {
     unsigned long j1;
     u64 j2;
@@ -104,9 +108,148 @@ static const struct proc_ops jit_currentime_fops = {
     .proc_lseek		= seq_lseek,
     .proc_release	= single_release,
 };
+
+/* -------------------timers -----------------------*/
+struct jit_data
+{
+    struct timer_list timer;
+    struct tasklet_struct tsklet;
+    struct seq_file *m;
+    int hi; /* taslket or tasklet_hi */
+    wait_queue_head_t wait;
+    unsigned long prevjiffies;
+    int loops;
+};
+
+static void jit_timer_handler(struct timer_list *t)
+{
+    struct jit_data *data = container_of(t, struct jit_data, timer);
+    unsigned long j = jiffies;
+    seq_printf(data->m, "%9li  %3li     %i    %6i   %i   %s\n",
+                 j, j - data->prevjiffies, in_interrupt() ? 1 : 0,
+                 current->pid, smp_processor_id(), current->comm);
+    if (--data->loops > 0)
+    {
+        data->timer.expires+= delay;
+        data->prevjiffies = j;
+        add_timer(&data->timer);
+    }else
+    {
+        wake_up_interruptible(&data->wait);
+    }
+
+}
+static int jit_timer_show(struct seq_file *m, void *v)
+{
+    /* init and allocate everything */
+    struct jit_data *data;
+    unsigned long j = jiffies;
+    data = kzalloc(sizeof(struct jit_data), GFP_KERNEL);
+    if (!data)
+        return -ENOMEM;
+    seq_puts(m, "   time   delta  inirq    pid   cpu command\n");
+    seq_printf(data->m, "%9li  %3li     %i    %6i   %i   %s\n",
+                 j, j - data->prevjiffies, in_interrupt() ? 1 : 0,
+                 current->pid, smp_processor_id(), current->comm);
+    /* init */
+    init_waitqueue_head(&data->wait);
+    /* fill the data for our timer */
+    data->prevjiffies = j;
+    data->m = m;
+    data->loops = JIT_ASYNC_LOOPS;
+    /* regisiter a timer */
+    timer_setup(&data->timer, jit_timer_handler, 0);
+    data->timer.expires = jiffies + delay;
+    add_timer(&data->timer);
+
+    /* wait for buffer to fill */
+    if (wait_event_interruptible(data->wait, data->loops == 0))
+        return -ERESTARTSYS;
+    kfree(data);
+    return 0;
+}
+static int jit_timer_open(struct inode *inode, struct file *file){
+
+    return single_open(file, jit_timer_show, NULL);
+}
+
+static const struct proc_ops jit_timer_fops = {
+    .proc_open		= jit_timer_open,
+    .proc_read		= seq_read,
+    .proc_lseek		= seq_lseek,
+    .proc_release	= single_release,
+};
+static void jit_tasklet_handler(struct tasklet_struct *t)
+{
+    struct jit_data *data = container_of(t, struct jit_data, tsklet);
+    unsigned long j = jiffies;
+    seq_printf(data->m, "%9li  %3li     %i    %6i   %i   %s\n",
+                 j, j - data->prevjiffies, in_interrupt() ? 1 : 0,
+                 current->pid, smp_processor_id(), current->comm);
+    if (--data->loops > 0)
+    {
+        data->prevjiffies = j;
+        if (data->hi)
+            tasklet_hi_schedule(&data->tsklet);
+        else
+            tasklet_schedule(&data->tsklet);
+    }else
+    {
+        wake_up_interruptible(&data->wait);
+    }
+
+}
+static int jit_tasklet_show(struct seq_file *m, void *v)
+{
+    /* init and allocate everything */
+    struct jit_data *data;
+    unsigned long j = jiffies;
+    long hi = (long)m->private;
+    data = kzalloc(sizeof(struct jit_data), GFP_KERNEL);
+    if (!data)
+        return -ENOMEM;
+    seq_puts(m, "   time   delta  inirq    pid   cpu command\n");
+    seq_printf(data->m, "%9li  %3li     %i    %6i   %i   %s\n",
+                 j, j - data->prevjiffies, in_interrupt() ? 1 : 0,
+                 current->pid, smp_processor_id(), current->comm);
+    /* init */
+    init_waitqueue_head(&data->wait);
+    /* fill the data for our timer */
+    data->prevjiffies = j;
+    data->m = m;
+    data->loops = JIT_ASYNC_LOOPS;
+    /* regisiter a tasklet */
+    tasklet_setup(&data->tsklet, jit_tasklet_handler);
+    data->hi = hi;
+    if (data->hi)
+        tasklet_hi_schedule(&data->tsklet);
+    else
+        tasklet_schedule(&data->tsklet);
+    add_timer(&data->timer);
+    /* wait for buffer to fill */
+    if (wait_event_interruptible(data->wait, data->loops == 0))
+        return -ERESTARTSYS;
+    kfree(data);
+    return 0;
+}
+static int jit_tasklet_open(struct inode *inode, struct file *file){
+
+    return single_open(file, jit_tasklet_show, pde_data(inode));
+}
+
+static const struct proc_ops jit_tasklet_fops = {
+    .proc_open		= jit_tasklet_open,
+    .proc_read		= seq_read,
+    .proc_lseek		= seq_lseek,
+    .proc_release	= single_release,
+};
+
+
+
 static int __init jit_init(void)
 {
-    pr_info("faulty: loading\n");
+    pr_info("jit: loading\n");
+
 
     proc_entry = proc_mkdir("jit", NULL);
     if (!proc_entry)
@@ -115,7 +258,24 @@ static int __init jit_init(void)
         return -ENOMEM;
     if (!proc_create_data("jitbusy", 0666, proc_entry, &jit_fn_fops, (void*)JIT_BUSY))
         return -ENOMEM;
+    if (!proc_create_data("jitsched", 0666, proc_entry, &jit_fn_fops, (void*)JIT_SCHED))
+        return -ENOMEM;
+    if (!proc_create_data("jitqueue", 0666, proc_entry, &jit_fn_fops, (void*)JIT_QUEUE))
+        return -ENOMEM;
+    if (!proc_create_data("jitschedto", 0666, proc_entry, &jit_fn_fops, (void*)JIT_SCHEDTO))
+        return -ENOMEM;
 
+
+
+    /*jitimer, jitasklet, jitasklethi*/
+
+    if (!proc_create_data("jitimer", 0666, proc_entry, &jit_timer_fops, NULL))
+        return -ENOMEM;
+    if (!proc_create_data("jitasklet", 0666, proc_entry, &jit_timer_fops, NULL))
+        return -ENOMEM;
+
+    if (!proc_create_data("jitasklethi", 0666, proc_entry, &jit_timer_fops, (void *)1))
+        return -ENOMEM;
 
     return 0;
 }
@@ -123,7 +283,8 @@ static int __init jit_init(void)
 static void __exit jit_exit(void)
 {
     remove_proc_subtree("jit", NULL);
-    pr_info("faulty: unloading\n");
+
+    pr_info("jit: unloading\n");
 }
 
 module_init(jit_init);
