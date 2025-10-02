@@ -387,7 +387,7 @@ static void scull_setup_cdev(struct scull_dev *dev, int index)
 	dev->cdev.owner = THIS_MODULE;
 	err = cdev_add(&dev->cdev, devno, 1);
 	if (err)
-		printk(KERN_NOTICE "scull: cdev_add failed\n");
+		printk(KERN_NOTICE "scullc: cdev_add failed\n");
 }
 
 static void _scull_cleanup_module(void)
@@ -421,15 +421,15 @@ static int __init scull_init(void) {
 		* With given (major, start_minor) register scull_nr_devs with name "scull" in /proc/devices
 		*/
 		dev = MKDEV(scull_major, scull_minor);
-		result = register_chrdev_region(dev, scull_nr_devs, "scull");
+		result = register_chrdev_region(dev, scull_nr_devs, "scullc");
 	}else
 	{
-		result = alloc_chrdev_region(&dev, scull_minor, scull_nr_devs, "scull");
+		result = alloc_chrdev_region(&dev, scull_minor, scull_nr_devs, "scullc");
 		scull_major = MAJOR(dev);
 	}
 	if (result < 0)
 	{
-		printk(KERN_WARNING "scull: cant get major %d\n", scull_major);
+		printk(KERN_WARNING "scullc: cant get major %d\n", scull_major);
 		return result;
 	}
 	/* GFP_KERNEL */
@@ -442,7 +442,7 @@ static int __init scull_init(void) {
 	struct scull_dev *device;
 
 	// create class at /sys/class/scull
-	cls = class_create("scull");
+	cls = class_create("scullc");
 	for (i=0; i<scull_nr_devs; i++)
 	{
 		device = &scull_devices[i];
@@ -452,7 +452,7 @@ static int __init scull_init(void) {
 		device->data    = NULL;
 		sema_init(&device->sem, 1);
 		scull_setup_cdev(device, i);
-		device_create(cls, NULL, MKDEV(scull_major, scull_minor + i), NULL, "scull%d", i);
+		device_create(cls, NULL, MKDEV(scull_major, scull_minor + i), NULL, "scullc%d", i);
 	}
     scullc_cache = kmem_cache_create("scullc", scull_quantum, 0, SLAB_HWCACHE_ALIGN, NULL);
     if (!scullc_cache)
