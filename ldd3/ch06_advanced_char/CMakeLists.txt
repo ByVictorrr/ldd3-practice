@@ -9,7 +9,6 @@ kmod_target(advanced_scull
             scull_access_control.c
         HEADERS
             ${COMMON_SCULL_DIR}/scull.h
-            ${COMMON_SCULL_DIR}/scull_ioctl.h
             scull_pipe.h
             scull_access_control.h
         # EXTRA_CFLAGS "-Wall -Wextra -DDEBUG"

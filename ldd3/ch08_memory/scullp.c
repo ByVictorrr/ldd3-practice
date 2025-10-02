@@ -3,6 +3,7 @@
 #include <linux/uaccess.h>
 #include <linux/container_of.h>
 #include "scull.h"
+#include "scull_ioctl.h"
 
 int scull_major = SCULL_MAJOR;
 int scull_minor = SCULL_MINOR;

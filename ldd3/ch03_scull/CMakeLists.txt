@@ -8,7 +8,6 @@ kmod_target(scull
             ${COMMON_SCULL_DIR}/scull_core.c
         HEADERS
             ${COMMON_SCULL_DIR}/scull.h
-            ${COMMON_SCULL_DIR}/scull_ioctl.h
         # EXTRA_CFLAGS "-Wall -Wextra -DDEBUG"
         EXTRA_CFLAGS "-I${COMMON_SCULL_DIR} -Wno-error=misleading-indentation -g -fno-omit-frame-pointer -Wno-error=missing-prototypes" # include headers in cwd
 )

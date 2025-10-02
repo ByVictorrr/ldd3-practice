@@ -23,7 +23,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#include "../scull_ioctl.h"
+#include "scull.h"
 
 static const char *devpath = "/dev/scull0";
 

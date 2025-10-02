@@ -231,4 +231,5 @@ add_subdirectory(ldd3/ch04_debug)
 add_subdirectory(ldd3/ch05_concurrency)
 add_subdirectory(ldd3/ch06_advanced_char)
 add_subdirectory(ldd3/ch07_timers)
+add_subdirectory(ldd3/ch08_memory)
 
