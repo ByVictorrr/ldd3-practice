@@ -232,4 +232,5 @@ add_subdirectory(ldd3/ch05_concurrency)
 add_subdirectory(ldd3/ch06_advanced_char)
 add_subdirectory(ldd3/ch07_timers)
 add_subdirectory(ldd3/ch08_memory)
+add_subdirectory(ldd3/ch09_hw_communication)
 

@@ -415,7 +415,7 @@ static void _scull_cleanup_module(void)
 	unregister_chrdev_region(devno, scull_nr_devs);
 	class_destroy(cls);
 }
-static int __init scull_init(void) {
+static int __init short_init(void) {
 	dev_t dev;
 	int result, i;
 
@@ -467,9 +467,9 @@ static int __init scull_init(void) {
 }
 
 
-static void __exit scull_exit(void) {
+static void __exit short_exit(void) {
 	_scull_cleanup_module();
 }
 
-module_init(scull_init)
-module_exit(scull_exit)
+module_init(short_init)
+module_exit(short_exit)
