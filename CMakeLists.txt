@@ -74,7 +74,7 @@ endif()
 #             [EXTRA_CFLAGS "…"])
 function(kmod_target NAME)
     set(options)
-    set(oneValueArgs EXTRA_CFLAGS)
+    set(oneValueArgs EXTRA_CFLAGS MODULE_PARAMS)
     set(multiValueArgs SOURCES HEADERS)
     cmake_parse_arguments(KMOD "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
     if(NOT KMOD_SOURCES)
@@ -188,10 +188,22 @@ function(kmod_target NAME)
     target_compile_definitions(${NAME}_index PRIVATE __KERNEL__ MODULE KBUILD_MODNAME=\"${NAME}\")
 
     # --- Convenience targets (unchanged, shortened here) ---
+    set(_module_params "")
+    if(KMOD_MODULE_PARAMS)
+       set(_module_params "${KMOD_MODULE_PARAMS}")
+    elseif(DEFINED ${NAME}_MODULE_PARAMS)
+       # variable-of-variable expansion
+       set(_module_params "${${NAME}_MODULE_PARAMS}")
+    elseif(DEFINED KMOD_GLOBAL_MODULE_PARAMS)
+       set(_module_params "${KMOD_GLOBAL_MODULE_PARAMS}")
+    endif()
+
+    message(STATUS "kmod_target(${NAME}): MODULE_PARAMS='${KMOD_MODULE_PARAMS}' -> effective '${_module_params}'")
+
     add_custom_target(${NAME}-insmod
             DEPENDS qemu-up ${NAME}
             COMMAND ${SCP_BIN} ${SCP_ARGS} "${STAGE}/${NAME}.ko" root@localhost:/tmp/${NAME}.ko
-            COMMAND ${SSH_BIN} ${SSH_ARGS} "insmod /tmp/${NAME}.ko || dmesg | tail -n 200"
+            COMMAND ${SSH_BIN} ${SSH_ARGS} "insmod /tmp/${NAME}.ko ${_module_params} || dmesg | tail -n 200"
             USES_TERMINAL
             VERBATIM
             COMMENT "insmod ${NAME} on guest"
@@ -233,4 +245,5 @@ add_subdirectory(ldd3/ch06_advanced_char)
 add_subdirectory(ldd3/ch07_timers)
 add_subdirectory(ldd3/ch08_memory)
 add_subdirectory(ldd3/ch09_hw_communication)
+add_subdirectory(ldd3/ch10_interrupts)
 
