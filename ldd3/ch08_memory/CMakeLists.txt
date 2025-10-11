@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 project(scull_mem NONE)
-set(COMMON_SCULL_DIR "${CMAKE_SOURCE_DIR}/ldd3/common_scull")
+set(COMMON_SCULL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../common_scull")
 kmod_target(scullc
         SOURCES scullc.c
         HEADERS  ${COMMON_SCULL_DIR}/scull.h

@@ -8,6 +8,7 @@
             <mapping deploy="/tmp/tmp.xMUH94QeyU/ldd3-practice" local="$PROJECT_DIR$" />
           </mappings>
           <excludedPaths>
+            <excludedPath local="true" path="$PROJECT_DIR$/rpi-projects/cmake-build-ldd3-debug" />
             <excludedPath local="true" path="$PROJECT_DIR$/cmake-build-debug" />
             <excludedPath local="true" path="$PROJECT_DIR$/rpi-projects/cmake-build-rpi-debug" />
             <excludedPath local="true" path="$PROJECT_DIR$/rpi-projects/adc/cmake-build-rpi-debug" />

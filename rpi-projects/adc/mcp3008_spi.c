@@ -3,6 +3,7 @@
 #include <linux/moduleparam.h>
 #include <linux/init.h>
 #include <linux/gpio.h>
+#include <linux/spi/spi.h>
 
 
 static int howmany = 1;
@@ -14,6 +15,10 @@ MODULE_PARM_DESC(howmany, "Number of greetings");
 module_param(whom, charp, 0444);
 MODULE_PARM_DESC(whom, "Whom to greet");
 
+
+struct spi_device *spi = {
+
+};
 static int __init hello_init(void) {
     int i;
     for (i = 0; i < howmany; i++)
