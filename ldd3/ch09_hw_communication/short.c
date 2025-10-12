@@ -67,7 +67,7 @@ static ssize_t short_read(struct file *filp, char __user *buf, size_t count, lof
 	return count;
 }
 
-static ssize_t short_write(struct file *filp, const char __user *buf, size_t count, loff_t *f_pos)
+static ssize_t edu_write(struct file *filp, const char __user *buf, size_t count, loff_t *f_pos)
 {
 	size_t i;
 	u8 v;
@@ -96,7 +96,7 @@ static ssize_t short_write(struct file *filp, const char __user *buf, size_t cou
 static const struct file_operations short_fops = {
 	.owner  = THIS_MODULE,
 	.read   = short_read,
-	.write  = short_write,
+	.write  = edu_write,
 	.llseek = short_llseek,
 };
 

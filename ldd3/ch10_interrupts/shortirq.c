@@ -59,7 +59,7 @@ MODULE_PARM_DESC(bh_mode, "Bottom-half mode: tasklet, threaded, or workqueue");
 
 
 
-struct shortirq_device
+struct edu_irq_device
 {
 	spinlock_t lock; // lock
 	atomic_t event_count; // tells
@@ -78,7 +78,7 @@ struct shortirq_device
 static ssize_t short_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos)
 {
 	/* Basically waits until short_dev.head->ready ... rail if any are ready*/
-	struct shortirq_device *dev = &shortirq_dev;
+	struct edu_irq_device *dev = &shortirq_dev;
 	unsigned long flags = 0;
 	ktime_t kt;
 	u64 ns;
@@ -102,9 +102,9 @@ static ssize_t short_read(struct file *filp, char __user *buf, size_t count, lof
 	return len;
 }
 
-static ssize_t short_write(struct file *filp, const char __user *buf, size_t count, loff_t *f_pos)
+static ssize_t edu_write(struct file *filp, const char __user *buf, size_t count, loff_t *f_pos)
 {
-	struct shortirq_device *dev = &shortirq_dev;
+	struct edu_irq_device *dev = &shortirq_dev;
 	outb(1, poke_base + dev->irq);            // assert IRQ7
 	outb(0, poke_base + dev->irq);            // deassert IRQ7 (edge/pulse)
 	return count;
@@ -113,19 +113,19 @@ static ssize_t short_write(struct file *filp, const char __user *buf, size_t cou
 static const struct file_operations shortirq_fops = {
 	.owner  = THIS_MODULE,
 	.read   = short_read,
-	.write  = short_write,
+	.write  = edu_write,
 	.llseek = noop_llseek,
 };
 
-static struct miscdevice shortirq_device = {
+static struct miscdevice miscdev = {
 	.minor = MISC_DYNAMIC_MINOR,
 	.name  = "shortirq",
 	.fops  = &shortirq_fops,
 	.mode  = 0660,
 };
-static irqreturn_t shortirq_irq_handler(int irq, void *dev_id)
+static irqreturn_t edu_irq_handler(int irq, void *dev_id)
 {
-	struct shortirq_device *dev = dev_id;
+	struct edu_irq_device *dev = dev_id;
 	ktime_t tk = ktime_get();
 	// acquire lock
 	spin_lock(&dev->lock);
@@ -150,7 +150,7 @@ static irqreturn_t shortirq_irq_handler(int irq, void *dev_id)
 }
 static irqreturn_t shortirq_threaded_handler(int irq, void *dev_id)
 {
-	struct shortirq_device *d = dev_id;
+	struct edu_irq_device *d = dev_id;
 	/* notify user space */
 	if (atomic_read(&d->event_count))
 		wake_up_interruptible(&d->waitq);
@@ -161,16 +161,16 @@ static irqreturn_t shortirq_threaded_handler(int irq, void *dev_id)
 static void shortirq_tasklet(unsigned long data)
 {
 
-	struct shortirq_device *d = (struct shortirq_device *)data;
+	struct edu_irq_device *d = (struct edu_irq_device *)data;
 	/* notify user space */
 	if (atomic_read(&d->event_count))
 		wake_up_interruptible(&d->waitq);
 	pr_info("shortirq tasklet (%s): waking up processes\n", current->comm);
 
 }
-static void shortirq_work(struct work_struct *work)
+static void edu_work(struct work_struct *work)
 {
-	struct shortirq_device *d = container_of(work, struct shortirq_device, work);
+	struct edu_irq_device *d = container_of(work, struct edu_irq_device, work);
 	/* notify user space */
 	if (atomic_read(&d->event_count))
 		wake_up_interruptible(&d->waitq);
@@ -183,22 +183,22 @@ static int __init short_init(void)
 {
 	int ret;
 
-	struct shortirq_device * dev = &shortirq_dev;
+	struct edu_irq_device * dev = &shortirq_dev;
 	dev->irq = IRQ_NUMBER;
 	unsigned long port = poke_base + shortirq_dev.irq;
 	/* Port I/O: reserve ports; no mapping */
 	if (!request_region(port, 1,"shortirq")) return -EBUSY;
-	ret = misc_register(&shortirq_device);
+	ret = misc_register(&miscdev);
 	if (ret) {
 		release_region(port, 1);
 		return ret;
 	}
 	/* request thread */
-	ret = request_threaded_irq(dev->irq, shortirq_irq_handler,
+	ret = request_threaded_irq(dev->irq, edu_irq_handler,
 		(bh_mode == BH_THREADED) ? shortirq_threaded_handler: NULL, IRQF_SHARED, "shortirq", dev);
 	if (ret)
 	{
-		misc_deregister(&shortirq_device);
+		misc_deregister(&miscdev);
 		release_region(port, 1);
 	}
 	// initalize the device here
@@ -207,7 +207,7 @@ static int __init short_init(void)
 	atomic_set(&dev->index, 0);
 	memset(dev->timestamps, 0, sizeof(dev->timestamps));
 	init_waitqueue_head(&dev->waitq);
-	INIT_WORK(&dev->work, shortirq_work);
+	INIT_WORK(&dev->work, edu_work);
 	tasklet_init(&dev->tasklet, shortirq_tasklet, (unsigned long)dev);
 
 	pr_info("shortirq: port I/O at 0x%lx as /dev/short; ", port);
@@ -216,9 +216,9 @@ static int __init short_init(void)
 
 static void __exit short_exit(void)
 {
-	struct shortirq_device * dev = &shortirq_dev;
+	struct edu_irq_device * dev = &shortirq_dev;
 	free_irq(dev->irq, dev);
-	misc_deregister(&shortirq_device);
+	misc_deregister(&miscdev);
 	release_region(poke_base + shortirq_dev.irq, 1);
 	tasklet_kill(&dev->tasklet);
 	cancel_work_sync(&dev->work);
