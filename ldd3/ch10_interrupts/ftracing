@@ -1,3 +1,2 @@
- mount -t debugfs none /sys/kernel/debug
- echo 1 > /sys/kernel/debug/tracing/events/irq/irq_handler_entry/enable
-  cat /sys/kernel/debug/tracing/trace | grep short
+echo 1 > /sys/kernel/debug/tracing/events/irq/irq_handler_entry/enable
+cat /sys/kernel/debug/tracing/trace | grep short

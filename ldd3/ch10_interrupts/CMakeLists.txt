@@ -22,7 +22,6 @@ kmod_target(shortirq_workqueue
 
 kmod_target(edu_irq
         SOURCES pci_eduirq.c
-        MODULE_PARAMS "bh_mode=workqueue"
         # EXTRA_CFLAGS "-Wall -Wextra -DDEBUG"
         EXTRA_CFLAGS "-I${CMAKE_CURRENT_SOURCE_DIR} -DSCULL_DEBUG" # include headers in cwd
 )

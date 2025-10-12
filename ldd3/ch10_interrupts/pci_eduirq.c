@@ -72,6 +72,7 @@ static ssize_t short_read(struct file *filp, char __user *buf, size_t count, lof
 static ssize_t edu_write(struct file *filp, const char __user *buf, size_t count, loff_t *f_pos)
 {
 	struct edu_irq_device *dev = &edu_dev;
+	if (!dev->bar0) return -ENODEV;
 	iowrite32(0x1, dev->bar0 + EDU_IRQ_RAISE);
 	return count;
 }
@@ -124,9 +125,9 @@ static void edu_work(struct work_struct *work)
 }
 static const struct pci_device_id edu_ids[] = {
 	{PCI_DEVICE(EDU_VENDOR, EDU_DEVICE)},
-	{0},
+	{0,},
 };
-
+MODULE_DEVICE_TABLE(pci, edu_ids);
 
 
 static int edu_probe(struct pci_dev *pdev, const struct pci_device_id *id)
@@ -134,13 +135,21 @@ static int edu_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	int ret;
 
 	struct edu_irq_device * dev = &edu_dev;
+	// initalize the device here
+	spin_lock_init(&dev->lock);
+	atomic_set(&dev->event_count, 0);
+	atomic_set(&dev->index, 0);
+	memset(dev->timestamps, 0, sizeof(dev->timestamps));
+	init_waitqueue_head(&dev->waitq);
+	INIT_WORK(&dev->work, edu_work);
+
 	ret = pci_enable_device_mem(pdev); // enable bits on the config space
 	pci_set_master(pdev); // set command reg so it can do dma/intr
 	if (ret) return ret;
 	ret = pci_request_mem_regions(pdev, "pci_eduirq");
 	if (ret) goto disable_dev;
 	dev->bar0 = pci_iomap(pdev, 0, 0); // ioremap the bar0
-	if (dev->bar0)
+	if (!dev->bar0)
 	{
 		ret = -ENODEV;
 		goto release_mem;
@@ -160,14 +169,7 @@ static int edu_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	ret = misc_register(&miscdev);
 	if (ret) goto err_irq;
 	pci_set_drvdata(pdev, dev); // pdev->dev = dev
-	// initalize the device here
-	spin_lock_init(&dev->lock);
-	atomic_set(&dev->event_count, 0);
-	atomic_set(&dev->index, 0);
-	memset(dev->timestamps, 0, sizeof(dev->timestamps));
-	init_waitqueue_head(&dev->waitq);
-	INIT_WORK(&dev->work, edu_work);
-
+	dev->pdev = pdev;
 	dev_info(&pdev->dev, "EDU demo: BAR0 mapped, IRQ %d\n", pdev->irq);
 	return 0;
 	err_irq: free_irq(pdev->irq, dev);
