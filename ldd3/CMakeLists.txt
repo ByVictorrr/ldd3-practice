@@ -246,4 +246,5 @@ add_subdirectory(ch07_timers)
 add_subdirectory(ch08_memory)
 add_subdirectory(ch09_hw_communication)
 add_subdirectory(ch10_interrupts)
+add_subdirectory(ch11_ktypes)
 
