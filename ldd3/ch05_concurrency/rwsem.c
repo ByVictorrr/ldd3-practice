@@ -10,7 +10,7 @@
 static struct class *cls;
 static struct cdev rwsem_cdev;
 static dev_t dev;
-
+W
 static DECLARE_RWSEM(rwsem_lock);
 
 static ssize_t read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos){

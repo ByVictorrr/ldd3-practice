@@ -28,6 +28,33 @@ include_directories(
         ${KDIR}/arch/${KARCH}/include/uapi
         ${KDIR}/arch/${KARCH}/include/generated/uapi
 )
+
+# ---------------------- NEW: staging overrides & helper ----------------------
+# Where to stage (symlink/copy) sources for kbuild. You can override this:
+#   -DKMOD_STAGE_ROOT=/dev/shm/kmods
+set(KMOD_STAGE_ROOT "${CMAKE_BINARY_DIR}/kmods"
+        CACHE PATH "Root directory where kmod sources are staged for kbuild")
+
+# Some environments/IDEs dislike symlinks. Flip this to copy instead.
+#   -DKMOD_COPY_SOURCES=ON
+option(KMOD_COPY_SOURCES "Copy sources instead of creating symlinks" OFF)
+
+# Helper to stage files (copy or symlink) into the per-target STAGE dir
+function(_kmod_stage SRC DEST_DIR)
+    file(MAKE_DIRECTORY "${DEST_DIR}")
+    get_filename_component(_base "${SRC}" NAME)
+    if (KMOD_COPY_SOURCES)
+        file(COPY "${SRC}" DESTINATION "${DEST_DIR}" FOLLOW_SYMLINK_CHAIN)
+    else()
+        # Overwrite if exists to keep re-config idempotent
+        if (EXISTS "${DEST_DIR}/${_base}")
+            file(REMOVE "${DEST_DIR}/${_base}")
+        endif()
+        file(CREATE_LINK "${SRC}" "${DEST_DIR}/${_base}" SYMBOLIC)
+    endif()
+endfunction()
+# ---------------------------------------------------------------------------
+
 function(kmod_target NAME)
     set(oneValueArgs EXTRA_CFLAGS MODULE_PARAMS)
     set(multiValueArgs SOURCES HEADERS)
@@ -36,32 +63,36 @@ function(kmod_target NAME)
         message(FATAL_ERROR "kmod_target(${NAME}) requires SOURCES")
     endif()
 
-    set(STAGE "${CMAKE_BINARY_DIR}/kmods/${NAME}")
+    # ---------- CHANGED: use configurable stage root instead of CMAKE_BINARY_DIR ----------
+    set(STAGE "${KMOD_STAGE_ROOT}/${NAME}")
     file(MAKE_DIRECTORY "${STAGE}")
 
     set(OBJS "")
     set(INCDIRS "")
+
+    # Stage sources and build object list
     foreach(src ${KMOD_SOURCES})
         get_filename_component(SRC_ABS "${src}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+        _kmod_stage("${SRC_ABS}" "${STAGE}")
         get_filename_component(BASE "${SRC_ABS}" NAME)
-        file(CREATE_LINK "${SRC_ABS}" "${STAGE}/${BASE}" SYMBOLIC)
         string(REGEX REPLACE "\\.(c|S)$" ".o" OBJ "${BASE}")
         list(APPEND OBJS "${OBJ}")
         get_filename_component(SDIR "${SRC_ABS}" DIRECTORY)
         list(APPEND INCDIRS "${SDIR}")
     endforeach()
 
+    # Stage headers (optional)
     foreach(h ${KMOD_HEADERS})
         get_filename_component(H_ABS "${h}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
         if (EXISTS "${H_ABS}")
-            get_filename_component(HBASE "${H_ABS}" NAME)
-            file(CREATE_LINK "${H_ABS}" "${STAGE}/${HBASE}" SYMBOLIC)
+            _kmod_stage("${H_ABS}" "${STAGE}")
             get_filename_component(HDIR "${H_ABS}" DIRECTORY)
             list(APPEND INCDIRS "${HDIR}")
         endif()
     endforeach()
     list(REMOVE_DUPLICATES INCDIRS)
 
+    # Generate kbuild Makefile for this module
     set(MK "obj-m += ${NAME}.o\n")
     set(REST_OBJS "${OBJS}")
     list(REMOVE_ITEM REST_OBJS "${NAME}.o")
@@ -70,6 +101,7 @@ function(kmod_target NAME)
         string(APPEND MK "${NAME}-objs := ${REST_OBJS}\n")
     endif()
 
+    # Compose include flags for out-of-tree build
     set(INCFLAGS "")
     foreach(d ${INCDIRS})
         string(APPEND INCFLAGS " -I${d}")
@@ -93,23 +125,19 @@ function(kmod_target NAME)
     add_custom_target(${NAME} DEPENDS "${STAGE}/${NAME}.ko")
 
     # --- IDE indexing: attach sources so CLion knows they belong to a target ---
-    # Absolute paths for reliable mapping
     set(_ide_srcs "")
     foreach(_s ${KMOD_SOURCES} ${KMOD_HEADERS})
         get_filename_component(_abs "${_s}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
         list(APPEND _ide_srcs "${_abs}")
     endforeach()
 
-    # Option A (most reliable across CLion versions)
     add_custom_target(${NAME}-ide SOURCES ${_ide_srcs})
 
-    # Option B (works in newer CLion/CMake too; keep both is fine)
     add_library(${NAME}_ide INTERFACE)
     target_sources(${NAME}_ide INTERFACE ${_ide_srcs})
+    # ---------------------------------------------------------------------------
 
-    # Attach sources for IDE (no build effect)
-    ###################3
-
+    # Convenience targets: insmod/rmmod/dmesg
     set(_params "")
     if (KMOD_MODULE_PARAMS)
         set(_params "${KMOD_MODULE_PARAMS}")

@@ -1,0 +1,30 @@
+/dts-v1/; // required version marker
+/plugin/; // overlay patch extend the base tree instead of replacing it
+
+/ { // Root Node:  defines board comptability
+	// tells the kernel this overlay is meant for the Broadcom BCM2835 SoCs
+	compatible = "brcm,brcm2712";	 // string used by the kernel to load correct drivers
+	model = "Raspberry PI 5";
+	// child node; each device, bus or peripheral is represented as a node
+	// device node name@address
+	fragment@0{ // Overalys are divied into fragments
+		// target-path = "/soc@107c000000/spi@7d004000"; // target the spi0 controller -> existing label defined in the base tree
+		__overlay__ { // add to spi0 controller node that is existing
+			// kernel how to interpret child device addresses
+			#address-cells = <1>; // each child's reg property will use 1 cell (32 bits) for its address
+			#size-cells = <0>; // no size information for spi child devices
+
+			mcp3008@0 { // a child node name describing a device attached to SPI0
+				compatible = "tutorial,mcp3008"; // how kernel decides which drier to load
+				reg = <0>; // chip select 0
+				spi-max-frequency = <1000000>; // 1 MHz SPI clock
+				// If we wanted mode 3 we would specify both flags
+				// spi-cpol;
+				// spi-cpha;
+
+			};
+		};
+
+	};
+
+};
