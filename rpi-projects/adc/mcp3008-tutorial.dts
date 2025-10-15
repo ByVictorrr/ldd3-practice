@@ -9,7 +9,9 @@
 	// device node name@address
 	fragment@0{ // Overalys are divied into fragments
 		// target-path = "/soc@107c000000/spi@7d004000"; // target the spi0 controller -> existing label defined in the base tree
+		target = <&spi0>;
 		__overlay__ { // add to spi0 controller node that is existing
+
 			// kernel how to interpret child device addresses
 			#address-cells = <1>; // each child's reg property will use 1 cell (32 bits) for its address
 			#size-cells = <0>; // no size information for spi child devices
