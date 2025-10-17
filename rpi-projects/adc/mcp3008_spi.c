@@ -1,12 +1,12 @@
+#include <linux/types.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/moduleparam.h>
 #include <linux/init.h>
-#include <linux/gpio.h>
 #include <linux/miscdevice.h>
 #include <linux/device.h>
 #include <linux/spi/spi.h>
-
+#include <linux/errno.h>
 
 struct mcp3008_data{
 	struct spi_device *spi; // spi device handle
@@ -14,7 +14,7 @@ struct mcp3008_data{
 }mcp3008_dev;
 
 static ssize_t mcp3008_read(struct file *f, char __user *ubuf, size_t count, loff_t *ppos){
-	struct mcp3008_data * data = (struct mcp3008_data *)f->private_data;
+	struct mcp3008_data * data = f->private_data;
 	u8 tx[3], rx[3];
 	// Can have multiple but one transfer, then next happens in message
 	struct spi_transfer xfer = { // represents one transfer (while CE is held high)
@@ -23,7 +23,6 @@ static ssize_t mcp3008_read(struct file *f, char __user *ubuf, size_t count, lof
 		.len = 3,
 		.cs_change = 0,
 		.bits_per_word = 8,
-		.speed_hz = data->spi->max_speed_hz,
 	};
 	struct spi_message msg;
 	int ret;
@@ -51,7 +50,7 @@ static ssize_t mcp3008_read(struct file *f, char __user *ubuf, size_t count, lof
 	// rx[1] [x|x|x|x|x|x|d9|d8]
 	// rx[2] [d7|d6|d5|d4|d3|d2|d1|d0]
 	value = ((rx[1] & 0x03) << 8) | rx[2];
-	dev_err(&data->spi->dev, "Raw SPI bytes: %02x %02x %02x, value=%d\n", rx[0], rx[1], rx[2], value);
+	dev_info(&data->spi->dev, "Raw SPI bytes: %02x %02x %02x, value=%d\n", rx[0], rx[1], rx[2], value);
 	// conver the value to a string
 	len = scnprintf(result_str, sizeof(result_str), "%d\n", value);
 	// copy to userspace
