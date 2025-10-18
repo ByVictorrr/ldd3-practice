@@ -14,6 +14,8 @@ static unsigned int period_ms = 50;
 module_param(period_ms, uint, 0644);
 
 
+static DECLARE_KFIFO(fifo, u16, FIFO_SAMPLES);
+
 struct mcp3008_data{
 	struct spi_device *spi; // spi device handle
 	unsigned int curr_channel; // current ch (0-7) for future use
@@ -27,8 +29,9 @@ struct mcp3008_data{
 	struct timer_list timer;
 	struct work_struct work;
 	atomic_t in_progress;
-	struct kfifo *fifo;
 	spinlock_t fifo_lock;
+	wait_queue_head_t wq;
+
 }mcp3008_dev;
 
 static void mcp3008_prep_cmd(struct mcp3008_data *d){
@@ -41,11 +44,15 @@ static void mcp3008_async_complete(void *ctx){
 	/* here we fill in the fifo */
 	struct mcp3008_data *d = ctx;
 	u16 value = ((d->rx[1] & 0x03) << 8) | d->rx[2];
-	kfifo_in_spinlocked(&d->fifo, &value, 1, &d->fifo_lock);
+	dev_info(&d->spi->dev, "rx: %02x %02x %02x -> %u\n", d->rx[0], d->rx[1], d->rx[2], value);
+	kfifo_in_spinlocked(&fifo, &value, 1, &d->fifo_lock);
+
 	// wake up readers in read function
+	// wake_up_interruptible(&d->wq);
 	atomic_set(&d->in_progress, 0);
-	// lastly signal completion
-	complete(&d->done);
+
+	complete(&d->done); // lastly signal completion - for spi-async
+
 }
 static void mcp3008_work(struct work_struct *w){
 
@@ -74,36 +81,39 @@ static void mcp3008_timer(struct timer_list *t){
 
 static ssize_t mcp3008_read(struct file *f, char __user *ubuf, size_t count, loff_t *ppos){
 	struct mcp3008_data * data = (struct mcp3008_data *)f->private_data;
-	char buf[FIFO_SAMPLES][5];
-	int n, len, num_samples;
+	char buf[FIFO_SAMPLES][6];
+	int n, len=0, num_samples;
 	u16 samples[FIFO_SAMPLES];
 
+	// set to eof
+	// if (*ppos != 0) return 0;
 	/* basically show to the user whatever you can fit in their buffer */
-	if (kfifo_is_empty(&data->fifo))
+	while (kfifo_is_empty(&fifo))
 	{
 		// if non blocking just return come back
-		if (f->f_flags & O_NONBLOCK) return -ERESTARTSYS;
-		// wait for a completion or interuupt
+		if (f->f_flags & O_NONBLOCK) return -EAGAIN;
+		// wait for a completion or interupt
+
+
+		// if (wait_event_interruptible(data->wq, !kfifo_is_empty(&fifo))) return -ERESTARTSYS;
 		if (wait_for_completion_interruptible(&data->done)) return -ERESTARTSYS;
 
 	}
 	// give data here
-	n = kfifo_out_locked(&data->fifo, &samples, ARRAY_SIZE(samples), &data->fifo_lock);
+	n = kfifo_out_locked(&fifo, samples, ARRAY_SIZE(samples), &data->fifo_lock);
 	// see how many characters they can accepts
 
-	num_samples = min(n, count/5);
-	if (!num_samples) return -ERESTARTSYS;
+	num_samples = min(n, (int)(count/5));
+	if (!num_samples) return -EAGAIN;
 
 	for (int i=0; i < num_samples; i++)
-	{
-		len += scnprintf(buf[i], sizeof(buf[i]), "%d\n", samples[i]);
-	}
+		len += scnprintf(buf[i], sizeof(buf[i]), "%u\n", samples[i]);
 
 
-	if (len < count) count = len;
+	if (len > count) len=count;
 	if(copy_to_user(ubuf, buf, len)) return -EFAULT;
-	*ppos += count;
-	return count;
+	*ppos +=len;
+	return len;
 }
 
 static int mcp3008_open(struct inode *inode, struct file *file){
@@ -145,7 +155,9 @@ static int mcp3008_probe(struct spi_device *spi) {
 	spi->mode = SPI_MODE_0;
 	spi->max_speed_hz = 1000000;
 	spi->bits_per_word = 8;
-	spi_setup(spi); // apply the changes
+	ret = spi_setup(spi); // apply the changes
+	if (ret) return ret;
+
 	spin_lock_init(&data->fifo_lock);
 	atomic_set(&data->in_progress, 0);
 
@@ -156,13 +168,11 @@ static int mcp3008_probe(struct spi_device *spi) {
 
 	init_completion(&data->done);
 	spi_message_init(&data->msg);
-	ret = kfifo_alloc(&data->fifo, FIFO_SAMPLES * sizeof(u16), GFP_KERNEL);
-	if (ret)
-		return ret;
 	data->msg.complete = mcp3008_async_complete;
 	data->msg.context = data;
 	spi_message_add_tail(&data->xfer, &data->msg);
 	INIT_WORK(&data->work, mcp3008_work);
+	init_waitqueue_head(&data->wq);
 	// setup timer
 	timer_setup(&data->timer, mcp3008_timer, 0);
 	if (period_ms > 0)
@@ -171,7 +181,8 @@ static int mcp3008_probe(struct spi_device *spi) {
 
 
 
-	misc_register(&misc_mcp3008_dev);
+	ret = misc_register(&misc_mcp3008_dev);
+	if (ret) return ret;
 	spi_set_drvdata(spi, data);
 
     return 0;
@@ -180,9 +191,8 @@ static int mcp3008_probe(struct spi_device *spi) {
 static void mcp3008_remove(struct spi_device *spi) {
 	struct mcp3008_data *d= spi_get_drvdata(spi);
 	misc_deregister(&misc_mcp3008_dev);
-	flush_work(&d->work);
 	del_timer_sync(&d->timer);
-	kfifo_free(d->fifo);
+	flush_work(&d->work);
     printk(KERN_INFO "Unloading MCP3008!\n");
 }
 static const struct of_device_id mcp3008_dt_ids[] = {
