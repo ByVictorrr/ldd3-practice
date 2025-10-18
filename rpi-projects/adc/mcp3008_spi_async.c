@@ -10,11 +10,12 @@
 /* module param: period in ms; 0 = no periodic sampling */
 #define FIFO_SAMPLES 1024
 
-static unsigned int period_ms = 50;
-module_param(period_ms, uint, 0644);
+static int period_ms = 50;
+module_param(period_ms, int, 0644);
 
 
 static DECLARE_KFIFO(fifo, u16, FIFO_SAMPLES);
+static DEFINE_SPINLOCK(fifo_lock);
 
 struct mcp3008_data{
 	struct spi_device *spi; // spi device handle
@@ -29,7 +30,6 @@ struct mcp3008_data{
 	struct timer_list timer;
 	struct work_struct work;
 	atomic_t in_progress;
-	spinlock_t fifo_lock;
 	wait_queue_head_t wq;
 
 }mcp3008_dev;
@@ -45,10 +45,12 @@ static void mcp3008_async_complete(void *ctx){
 	struct mcp3008_data *d = ctx;
 	u16 value = ((d->rx[1] & 0x03) << 8) | d->rx[2];
 	dev_info(&d->spi->dev, "rx: %02x %02x %02x -> %u\n", d->rx[0], d->rx[1], d->rx[2], value);
-	kfifo_in_spinlocked(&fifo, &value, 1, &d->fifo_lock);
-
+	spin_lock(&fifo_lock);
+	// kfifo_in_spinlocked(&fifo, &value, 1, &fifo_lock);
+	kfifo_put(&fifo, value);
+	spin_unlock(&fifo_lock);
 	// wake up readers in read function
-	// wake_up_interruptible(&d->wq);
+	//wake_up_interruptible(&d->wq);
 	atomic_set(&d->in_progress, 0);
 
 	complete(&d->done); // lastly signal completion - for spi-async
@@ -100,8 +102,15 @@ static ssize_t mcp3008_read(struct file *f, char __user *ubuf, size_t count, lof
 
 	}
 	// give data here
-	n = kfifo_out_locked(&fifo, samples, ARRAY_SIZE(samples), &data->fifo_lock);
+	// n = kfifo_out_locked(&fifo, samples, ARRAY_SIZE(samples), &fifo_lock);
+	spin_lock(&fifo_lock);
+	n = kfifo_out(&fifo, samples, ARRAY_SIZE(samples));
+	spin_unlock(&fifo_lock);
 	// see how many characters they can accepts
+	// After popping 'n' elements:
+	if (n > 0) {
+		dev_info(&data->spi->dev, "pop first=%u n=%u\n", samples[0], n);
+	}
 
 	num_samples = min(n, (int)(count/5));
 	if (!num_samples) return -EAGAIN;
@@ -158,7 +167,7 @@ static int mcp3008_probe(struct spi_device *spi) {
 	ret = spi_setup(spi); // apply the changes
 	if (ret) return ret;
 
-	spin_lock_init(&data->fifo_lock);
+	spin_lock_init(&fifo_lock);
 	atomic_set(&data->in_progress, 0);
 
 	memset(&data->xfer, 0, sizeof(data->xfer));
