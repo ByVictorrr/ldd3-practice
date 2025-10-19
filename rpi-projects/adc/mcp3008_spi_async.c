@@ -1,12 +1,19 @@
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
-#include <linux/gpio.h>
-#include <linux/miscdevice.h>
-#include <linux/device.h>
+#include <linux/types.h>         // u8, u16, etc.
 #include <linux/spi/spi.h>
+#include <linux/miscdevice.h>
+#include <linux/uaccess.h>       // copy_to_user
+#include <linux/slab.h>          // kmalloc/kfree
+#include <linux/string.h>        // scnprintf/mem*
 #include <linux/kfifo.h>
 #include <linux/spinlock.h>
+#include <linux/timer.h>
+#include <linux/workqueue.h>
+#include <linux/completion.h>
+#include <linux/wait.h>
+
 /* module param: period in ms; 0 = no periodic sampling */
 #define FIFO_SAMPLES 1024
 
@@ -30,10 +37,8 @@ struct mcp3008_data{
 	struct timer_list timer;
 	struct work_struct work;
 	atomic_t in_progress;
-	wait_queue_head_t wq;
 
 }mcp3008_dev;
-
 static void mcp3008_prep_cmd(struct mcp3008_data *d){
 	u8 channel = d->curr_channel & 0x07;
 	d->tx[0] = 0x01; // start bit = 1, single/diff = 1 (in next byte)
@@ -44,15 +49,10 @@ static void mcp3008_async_complete(void *ctx){
 	/* here we fill in the fifo */
 	struct mcp3008_data *d = ctx;
 	u16 value = ((d->rx[1] & 0x03) << 8) | d->rx[2];
-	dev_info(&d->spi->dev, "rx: %02x %02x %02x -> %u\n", d->rx[0], d->rx[1], d->rx[2], value);
-	spin_lock(&fifo_lock);
-	// kfifo_in_spinlocked(&fifo, &value, 1, &fifo_lock);
-	kfifo_put(&fifo, value);
-	spin_unlock(&fifo_lock);
-	// wake up readers in read function
-	//wake_up_interruptible(&d->wq);
+	if (!kfifo_in_spinlocked(&fifo, &value, 1, &fifo_lock))
+		dev_info(&d->spi->dev, "fifo is full\n");
+	// allow others to write
 	atomic_set(&d->in_progress, 0);
-
 	complete(&d->done); // lastly signal completion - for spi-async
 
 }
@@ -63,8 +63,9 @@ static void mcp3008_work(struct work_struct *w){
 	// if in_progress == 0 set it to 1; return previous ptr
 	if (atomic_cmpxchg(&d->in_progress, 0, 1) != 0)
 		return;
-	mcp3008_prep_cmd(d);
 	reinit_completion(&d->done);
+	/* rebuild the message every time */
+	mcp3008_prep_cmd(d);
 	ret = spi_async(d->spi, &d->msg);
 	if (ret){
 		dev_err(&d->spi->dev, "SPI transfer failed: %d\n", ret);
@@ -80,10 +81,9 @@ static void mcp3008_timer(struct timer_list *t){
 	mod_timer(&d->timer, jiffies + msecs_to_jiffies(period_ms));
 }
 
-
 static ssize_t mcp3008_read(struct file *f, char __user *ubuf, size_t count, loff_t *ppos){
 	struct mcp3008_data * data = (struct mcp3008_data *)f->private_data;
-	char buf[FIFO_SAMPLES][6];
+	char buf[FIFO_SAMPLES][5];
 	int n, len=0, num_samples;
 	u16 samples[FIFO_SAMPLES];
 
@@ -102,10 +102,7 @@ static ssize_t mcp3008_read(struct file *f, char __user *ubuf, size_t count, lof
 
 	}
 	// give data here
-	// n = kfifo_out_locked(&fifo, samples, ARRAY_SIZE(samples), &fifo_lock);
-	spin_lock(&fifo_lock);
-	n = kfifo_out(&fifo, samples, ARRAY_SIZE(samples));
-	spin_unlock(&fifo_lock);
+	n = kfifo_out_locked(&fifo, samples, ARRAY_SIZE(samples), &fifo_lock);
 	// see how many characters they can accepts
 	// After popping 'n' elements:
 	if (n > 0) {
@@ -124,11 +121,11 @@ static ssize_t mcp3008_read(struct file *f, char __user *ubuf, size_t count, lof
 	*ppos +=len;
 	return len;
 }
-
 static int mcp3008_open(struct inode *inode, struct file *file){
 	struct mcp3008_data *data = &mcp3008_dev;
 	file->private_data = data;
 	dev_dbg(&data->spi->dev, "Device opened\n");
+	kfifo_reset(&fifo);
 	return 0;
 }
 static int mcp3008_release(struct inode *inode, struct file *file){
@@ -166,6 +163,7 @@ static int mcp3008_probe(struct spi_device *spi) {
 	spi->bits_per_word = 8;
 	ret = spi_setup(spi); // apply the changes
 	if (ret) return ret;
+	INIT_KFIFO(fifo);
 
 	spin_lock_init(&fifo_lock);
 	atomic_set(&data->in_progress, 0);
@@ -181,7 +179,6 @@ static int mcp3008_probe(struct spi_device *spi) {
 	data->msg.context = data;
 	spi_message_add_tail(&data->xfer, &data->msg);
 	INIT_WORK(&data->work, mcp3008_work);
-	init_waitqueue_head(&data->wq);
 	// setup timer
 	timer_setup(&data->timer, mcp3008_timer, 0);
 	if (period_ms > 0)
