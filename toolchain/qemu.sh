@@ -16,6 +16,7 @@ exec qemu-system-x86_64 -enable-kvm -cpu host -smp 2 -m 2G \
   -append "kgdb.use_kdb=0 kgdboc=ttyS1,115200 console=ttyS0,115200 earlycon=ttyS0,115200 nokaslr rdinit=/init" \
   -netdev user,id=net0,hostfwd=tcp::2222-:22 \
   -device virtio-net-pci,netdev=net0 \
+  -nic user,model=e1000
   -device pc-testdev \
   -device edu
 

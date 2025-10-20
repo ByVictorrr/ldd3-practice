@@ -27,7 +27,7 @@ MODULE_DESCRIPTION("edu_irq");
 
 
 
-struct edu_irq_device
+struct edu_dev
 {
 	struct pci_dev *pdev;
 	void __iomem *bar0;
@@ -42,10 +42,10 @@ struct edu_irq_device
 
 
 
-static ssize_t short_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos)
+static ssize_t edu_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos)
 {
 	/* Basically waits until short_dev.head->ready ... rail if any are ready*/
-	struct edu_irq_device *dev = &edu_dev;
+	struct edu_dev *dev = &edu_dev;
 	unsigned long flags = 0;
 	ktime_t kt;
 	u64 ns;
@@ -71,7 +71,7 @@ static ssize_t short_read(struct file *filp, char __user *buf, size_t count, lof
 
 static ssize_t edu_write(struct file *filp, const char __user *buf, size_t count, loff_t *f_pos)
 {
-	struct edu_irq_device *dev = &edu_dev;
+	struct edu_dev *dev = &edu_dev;
 	if (!dev->bar0) return -ENODEV;
 	iowrite32(0x1, dev->bar0 + EDU_IRQ_RAISE);
 	return count;
@@ -79,7 +79,7 @@ static ssize_t edu_write(struct file *filp, const char __user *buf, size_t count
 
 static const struct file_operations edu_irq_fops = {
 	.owner  = THIS_MODULE,
-	.read   = short_read,
+	.read   = edu_read,
 	.write  = edu_write,
 	.llseek = noop_llseek,
 };
@@ -92,7 +92,7 @@ static struct miscdevice miscdev = {
 };
 static irqreturn_t edu_irq_handler(int irq, void *dev_id)
 {
-	struct edu_irq_device *dev = dev_id;
+	struct edu_dev *dev = dev_id;
 	ktime_t tk = ktime_get();
 	// latch - check if our device
 	u32 st = ioread32(dev->bar0 + EDU_IRQ_STATUS);
@@ -115,7 +115,7 @@ static irqreturn_t edu_irq_handler(int irq, void *dev_id)
 }
 static void edu_work(struct work_struct *work)
 {
-	struct edu_irq_device *d = container_of(work, struct edu_irq_device, work);
+	struct edu_dev *d = container_of(work, struct edu_dev, work);
 	/* notify user space */
 	if (atomic_read(&d->event_count))
 		wake_up_interruptible(&d->waitq);
@@ -134,7 +134,7 @@ static int edu_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 {
 	int ret;
 
-	struct edu_irq_device * dev = &edu_dev;
+	struct edu_dev * dev = &edu_dev;
 	// initalize the device here
 	spin_lock_init(&dev->lock);
 	atomic_set(&dev->event_count, 0);
@@ -185,7 +185,7 @@ static int edu_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 static void edu_remove(struct pci_dev *pdev)
 {
-	struct edu_irq_device * dev = pci_get_drvdata(pdev);
+	struct edu_dev * dev = pci_get_drvdata(pdev);
 	free_irq(pdev->irq, dev);
 	pci_free_irq_vectors(pdev);
 	pci_iounmap(pdev, dev->bar0);
