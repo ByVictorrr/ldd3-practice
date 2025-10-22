@@ -1,4 +1,3 @@
-// short_intr.c — one /dev/short; select DATA/STATUS/CTRL by file position (0..2)
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
@@ -12,6 +11,8 @@
 #include <linux/types.h>
 #include <linux/pci.h>
 #include <linux/kfifo.h>
+#include <linux/pm.h>
+#include <linux/pm_runtime.h>
 
 
 #define DRIVER_NAME "pci_edu"
@@ -36,6 +37,7 @@ module_param(interrupts_enabled, bool, 0);
 #define EDU_BAR0_LIVENESS_REG 0x04
 /* RW: write N; device writes back N! after you clear the 'factial busy bit' in STATUS */
 #define EDU_BAR0_FACTORIAL_REG 0x08
+
 /* RW: Bit-OR field: 0x01 = factorial busy (RO); 0x80= raise IRQ when factorial completes*/
 #define EDU_BAR0_STATUS_REG 0x20
 /* RO: latches value written in 'raise' 0x60, you clear vbits via 'ack' (0x64) */
@@ -83,6 +85,8 @@ struct edu_dev
 	/* dma address */
 	dma_addr_t dma_handle;
 	void * dma_buf;
+	/* save dma buffer */
+	char save_state[DMA_BUF_SIZE];
 
 };
 
@@ -109,8 +113,7 @@ static int edu_dma_transfers(struct edu_dev *ed, bool to_device, size_t size)
 	reinit_completion(&ed->done);
 	spin_unlock_irq(&ed->isr_lock);
 
-
-
+	// mutex here is holding only
 	if (to_device)
 	{
 		// RAM -> EDU (TX)
@@ -165,7 +168,13 @@ static ssize_t edu_read(struct file *filp, char __user *buf, size_t count, loff_
 	int ret;
 	struct edu_dev *dev = filp->private_data;
 	count = min(count, DMA_BUF_SIZE);
+	// resume device & increment if sucessful
+	ret = pm_runtime_resume_and_get(&dev->pdev->dev);
+	if (ret < 0) return ret;
 	ret = edu_dma_transfers(dev, false, count);
+	// mark last busy for work_delayed item that would run runtime_suspend
+	pm_runtime_mark_last_busy(&dev->pdev->dev);
+	pm_runtime_put_autosuspend(&dev->pdev->dev);
 	if (ret) return ret;
 	if (copy_to_user(buf, dev->dma_buf, count)) return -EFAULT;
 	return count;
@@ -177,7 +186,13 @@ static ssize_t edu_write(struct file *filp, const char __user *buf, size_t count
 	int ret;
 	count = min(count, DMA_BUF_SIZE);
 	if (copy_from_user(dev->dma_buf, buf, count)) return -EFAULT;
+	// resume device & increment if sucessful
+	ret = pm_runtime_resume_and_get(&dev->pdev->dev);
+	if (ret <0) return ret;
 	ret = edu_dma_transfers(dev, true, count);
+	// mark last busy for work_delayed item that would run runtime_suspend
+	pm_runtime_mark_last_busy(&dev->pdev->dev);
+	pm_runtime_put_autosuspend(&dev->pdev->dev);
 	if (ret) return ret;
 	return count;
 }
@@ -186,8 +201,8 @@ static struct miscdevice miscdev;
 static int edu_open(struct inode *inode, struct file *filp)
 {
 	struct edu_dev *dev = dev_get_drvdata(miscdev.this_device);
-	if (!dev) return -ENODEV;
 	filp->private_data = dev;
+
 	return 0;
 }
 
@@ -206,12 +221,22 @@ static struct miscdevice miscdev = {
 };
 
 
-static irqreturn_t edu_irq_handler(int irq, void *dev_id)
+static irqreturn_t edu_irq_threaded(int irq, void *dev_id)
 {
 	struct edu_dev *dev = dev_id;
+	struct device *kdev = &dev->pdev->dev;
+
+	int ret = pm_runtime_resume_and_get(kdev); // resume & inc if sucessful
+	if (ret < 0) return IRQ_NONE;
 	// latch - check if our device
 	u32 st = ioread32(dev->bar0 + EDU_BAR0_IRQ_STATUS_REG);
-	if (!st) return IRQ_NONE;
+	if (!st)
+	{
+		/* Not ours: drop the ref we took above. Use _noidle to avoid
+		* perturbing autosuspend timing since no real work happened. */
+		pm_runtime_put_noidle(kdev);
+		return IRQ_NONE;
+	}
 	// ack - clear the register
 	iowrite32(st, dev->bar0 + EDU_BAR0_IRQ_ACK_REG); // write same status value to ack
 	spin_lock(&dev->isr_lock);
@@ -219,6 +244,9 @@ static irqreturn_t edu_irq_handler(int irq, void *dev_id)
 	if (dev->in_flight)
 		complete(&dev->done);
 	spin_unlock(&dev->isr_lock);
+	/* we did the real work; refresh idel timer and allow autosuspend later */
+	pm_runtime_mark_last_busy(kdev);
+	pm_runtime_put_autosuspend(kdev);
 	return IRQ_HANDLED;
 
 }
@@ -287,7 +315,7 @@ static int edu_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	}
 	// request irq
 	pdev->irq = pci_irq_vector(pdev, 0); // get the irq thats mapped first vector entry in the var
-	ret = request_irq(pdev->irq, edu_irq_handler, 0, DRIVER_NAME, dev);
+	ret = request_threaded_irq(pdev->irq, NULL, edu_irq_threaded, IRQF_ONESHOT, DRIVER_NAME, dev);
 	if (ret < 0) goto err_vectors;
 	/* DMA Transfer */
 	ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(28));
@@ -305,6 +333,15 @@ static int edu_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	pci_set_drvdata(pdev, dev);
 	dev_set_drvdata(miscdev.this_device, dev);
 	dev->pdev = pdev;
+	/* PM Runtime options */
+	pm_runtime_enable(&pdev->dev);  	// // enables runtime power managemnt for this device
+	pm_runtime_set_active(&pdev->dev);  // tells pm core that the dev is currently active
+	pm_runtime_set_autosuspend_delay(&pdev->dev, 5000); // wait for 5s auto delay
+	pm_runtime_use_autosuspend(&pdev->dev); // tell pm core to use autosuspend
+	pm_runtime_mark_last_busy(&pdev->dev); // reset timer; last used
+	pm_runtime_put_autosuspend(&pdev->dev); // decrement usage count
+
+
 	dev_info(&pdev->dev, "EDU demo: BAR0 mapped, IRQ %d\n", pdev->irq);
 	return 0;
 	err_free_dma: dma_free_coherent(&pdev->dev, DMA_BUF_SIZE, dev->dma_buf, dev->dma_handle);
@@ -322,6 +359,11 @@ static int edu_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 static void edu_remove(struct pci_dev *pdev)
 {
 	struct edu_dev * dev = pci_get_drvdata(pdev);
+	// free runtime power management
+	pm_runtime_get_sync(&pdev->dev); // make sure .resume is called & usage_count = 1
+	pm_runtime_barrier(&pdev->dev);     // ensure no pending runtime work
+	pm_runtime_disable(&pdev->dev); // disable runtime pm feature
+	pm_runtime_put_noidle(&pdev->dev); // set usage_count = 0 with no trigger for suspend
 	dma_free_coherent(&pdev->dev, DMA_BUF_SIZE, dev->dma_buf, dev->dma_handle);
 	free_irq(pdev->irq, dev);
 	pci_free_irq_vectors(pdev);
@@ -331,11 +373,53 @@ static void edu_remove(struct pci_dev *pdev)
 	misc_deregister(&miscdev);
 
 }
+static int edu_pm_suspend(struct device *dev)
+{
+	struct pci_dev *pdev = to_pci_dev(dev);
+	struct edu_dev *priv = pci_get_drvdata(pdev);
+	u32 st;
+
+	/* Block new DMA submissions and implicitly wait for any in-flight DMA to finish */
+	mutex_lock(&priv->xfer_lock);
+
+	/* Clear any latched IRQ status to avoid immediate wake */
+	st = ioread32(priv->bar0 + EDU_BAR0_IRQ_STATUS_REG);
+	if (st) iowrite32(st, priv->bar0 + EDU_BAR0_IRQ_ACK_REG);
+
+	mutex_unlock(&priv->xfer_lock);
+	return 0;
+}
+
+static int edu_pm_resume(struct device *dev)
+{
+	struct pci_dev *pdev = to_pci_dev(dev);
+	struct edu_dev * priv = pci_get_drvdata(pdev);
+	u32 st;
+	/* Clear/ACK any sticky pending status from before sleep */
+	st = ioread32(priv->bar0 + EDU_BAR0_IRQ_STATUS_REG);
+	if (st) iowrite32(st, priv->bar0 + EDU_BAR0_IRQ_ACK_REG);
+	return 0;
+}
+static struct dev_pm_ops edu_pm_ops = {
+	.suspend = edu_pm_suspend,
+	.resume = edu_pm_resume,
+	.runtime_resume = edu_pm_resume,
+	.runtime_suspend = edu_pm_suspend,
+
+};
+
+
 static struct pci_driver edu_drv = {
 	.name = DRIVER_NAME,
 	.id_table = edu_ids,
 	.probe = edu_probe,
 	.remove = edu_remove,
+	.driver = {
+		.pm = &edu_pm_ops
+
+	},
+	.err_handler =  NULL
+
 
 };
 
