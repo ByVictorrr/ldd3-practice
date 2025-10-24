@@ -434,7 +434,8 @@ static pci_ers_result_t edu_error_detected(struct pci_dev *pdev,
 {
     struct edu_dev *priv = pci_get_drvdata(pdev);
     u32 st;
-
+	// step: 1 mask vector table entry
+	disable_irq_nosync(pdev->irq);
 	// step 2: quiecese software: stop timers, workqueues, etc,
 
     dev_warn(&pdev->dev, "AER: error_detected(state=%d), quiescing\n", state);
@@ -446,8 +447,6 @@ static pci_ers_result_t edu_error_detected(struct pci_dev *pdev,
 		/* Fatal path: ask for a reset of the downstream port */
 		return PCI_ERS_RESULT_NEED_RESET;
 	}
-	// step: 1 mask vector table entry - touches mmio
-	disable_irq_nosync(pdev->irq);
 
     /* Block new I/O and implicitly wait for any in-flight DMA to drain */
     mutex_lock(&priv->xfer_lock);
