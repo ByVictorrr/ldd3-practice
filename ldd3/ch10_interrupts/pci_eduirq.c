@@ -77,7 +77,7 @@ static ssize_t edu_write(struct file *filp, const char __user *buf, size_t count
 	return count;
 }
 
-static const struct file_operations edu_irq_fops = {
+static const struct file_operations uac_fops = {
 	.owner  = THIS_MODULE,
 	.read   = edu_read,
 	.write  = edu_write,
@@ -87,7 +87,7 @@ static const struct file_operations edu_irq_fops = {
 static struct miscdevice miscdev = {
 	.minor = MISC_DYNAMIC_MINOR,
 	.name  = "eduirq",
-	.fops  = &edu_irq_fops,
+	.fops  = &uac_fops,
 	.mode  = 0660,
 };
 static irqreturn_t edu_irq_handler(int irq, void *dev_id)

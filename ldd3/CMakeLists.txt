@@ -27,11 +27,10 @@ endif()
 # Idempotent: qemu.sh should return success if the guest is already up
 
 add_custom_target(qemu-up
-        # COMMAND bash -lc "pkill -9 qemu; nohup '${QEMU_SH}' >/tmp/qemu.log 2>&1 </dev/null &; sleep 3"
-        COMMAND bash -lc "tmux kill-session -t ldd3-qemu || true"
-        # COMMAND bash -lc " nohup '${QEMU_SH}' >/tmp/qemu.log 2>&1 </dev/null &"
-        COMMAND tmux new-session -d -s ldd3-qemu "/home/victord/git/ldd3-practice/toolchain/qemu.sh > /tmp/qemu.log 2>&1"
-        COMMAND bash -lc "sleep 3"
+        COMMAND bash -lc "${QEMU_SH} >/tmp/qemu.log" || exit 0
+        # COMMAND bash -lc "tmux kill-session -t ldd3-qemu || true"
+        # COMMAND tmux new-session -d -s ldd3-qemu "/home/victord/git/ldd3-practice/toolchain/qemu.sh > /tmp/qemu.log 2>&1"
+        # COMMAND bash -lc "sleep 60"
         VERBATIM
         COMMENT "Start QEMU in background (non-blocking)"
 )
@@ -248,4 +247,5 @@ add_subdirectory(ch09_hw_communication)
 add_subdirectory(ch10_interrupts)
 add_subdirectory(ch11_ktypes)
 add_subdirectory(ch12_pci)
+add_subdirectory(ch13_usb)
 

@@ -206,7 +206,7 @@ static int edu_open(struct inode *inode, struct file *filp)
 	return 0;
 }
 
-static const struct file_operations edu_irq_fops = {
+static const struct file_operations uac_fops = {
 	.owner  = THIS_MODULE,
 	.open   = edu_open,
 	.read   = edu_read,
@@ -216,7 +216,7 @@ static const struct file_operations edu_irq_fops = {
 static struct miscdevice miscdev = {
 	.minor = MISC_DYNAMIC_MINOR,
 	.name  = "edu",
-	.fops  = &edu_irq_fops,
+	.fops  = &uac_fops,
 	.mode  = 0660,
 };
 
