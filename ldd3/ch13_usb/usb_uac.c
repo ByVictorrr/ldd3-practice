@@ -161,76 +161,134 @@ static int uac_release(struct inode *inode, struct file *filp)
 	return 0;
 }
 
+/* Small helper so all logs look the same */
+static void uac_log_ctrl(struct uac_dev *dev,
+                         const char *tag,
+                         u8 bm, u8 req, u16 wVal, u16 wIdx, int len, int ret)
+{
+    dev_info(&dev->audio_ctrl->dev,
+             "%s bm=0x%02x req=0x%02x wValue=0x%04x wIndex=0x%04x len=%d ret=%d\n",
+             tag, bm, req, wVal, wIdx, len, ret);
+}
 
-/* constants per your lsusb: FU=2, AC IF=0, Mute only on ch=0 */
-static int uac_set_mute(struct uac_dev *dev, bool on)
+/* ---- MUTE ---- */
+
+static int uac_set_mute(struct uac_dev *dev, int ch, bool on)
 {
-	u8 b = on ? 1 : 0;
-	int ret = usb_control_msg(dev->udev,
-		usb_sndctrlpipe(dev->udev, 0),
-		UAC_SET_CUR,               /* 0x01 */
-		BMRT_CLASS_IF_OUT,         /* 0x21 */
-		uac_wValue(UAC_FU_MUTE, 0),/* 0x0100 */
-		uac_wIndex(2, 0),          /* 0x0200 */
-		&b, 1, 1000);
-	dev_info(&dev->audio_ctrl->dev, "SET_MUTE ret=%d\n", ret);
-	return (ret == 1) ? 0 : (ret < 0 ? ret : -EIO);
+    int ret;
+    u8 *b = kmalloc(1, GFP_KERNEL);
+    u8 bm = BMRT_CLASS_IF_OUT;    /* 0x21 */
+    u8 rq = UAC_SET_CUR;          /* 0x01 */
+    u16 wV = uac_wValue(UAC_FU_MUTE, ch);
+    u16 wI = uac_wIndex(dev->fu_id, dev->ac_ifnum);
+
+    if (!b) return -ENOMEM;
+    *b = on ? 1 : 0;
+
+    ret = usb_control_msg(dev->udev, usb_sndctrlpipe(dev->udev, 0),
+                          rq, bm, wV, wI, b, 1, USB_CTRL_SET_TIMEOUT);
+
+    uac_log_ctrl(dev, "SET_MUTE", bm, rq, wV, wI, 1, ret);
+
+    kfree(b);
+    return (ret == 1) ? 0 : (ret < 0 ? ret : -EIO);
 }
-static int uac_get_mute(struct uac_dev *dev, int __user *argp)
+
+static int uac_get_mute(struct uac_dev *dev, int ch, int __user *argp)
 {
-	u8 b = 0;
-	int ret = usb_control_msg(dev->udev,
-		usb_rcvctrlpipe(dev->udev, 0),
-		UAC_GET_CUR,               /* 0x81 */
-		BMRT_CLASS_IF_IN,          /* 0xA1 */
-		uac_wValue(UAC_FU_MUTE, 0),/* 0x0100 */
-		uac_wIndex(2, 0),          /* 0x0200 */
-		&b, 1, 1000);
-	if (ret != 1) {
-		dev_warn(&dev->audio_ctrl->dev, "GET_MUTE ret=%d\n", ret);
-		return ret < 0 ? ret : -EIO;
-	}
-	{
-		int v = b ? 1 : 0; /* ioctl contract: int */
-		if (copy_to_user(argp, &v, sizeof(v)))
-			return -EFAULT;
-	}
-	dev_info(&dev->audio_ctrl->dev, "get mute byte=%u\n", b);
-	return 0;
+    int ret;
+    u8 *b = kmalloc(1, GFP_KERNEL);
+    u8 bm = BMRT_CLASS_IF_IN;     /* 0xA1 */
+    u8 rq = UAC_GET_CUR;          /* 0x81 */
+    u16 wV = uac_wValue(UAC_FU_MUTE, ch);
+    u16 wI = uac_wIndex(dev->fu_id, dev->ac_ifnum);
+
+    if (!b) return -ENOMEM;
+
+    ret = usb_control_msg(dev->udev, usb_rcvctrlpipe(dev->udev, 0),
+                          rq, bm, wV, wI, b, 1, USB_CTRL_GET_TIMEOUT);
+
+    uac_log_ctrl(dev, "GET_MUTE", bm, rq, wV, wI, 1, ret);
+
+    if (ret != 1) { kfree(b); return ret < 0 ? ret : -EIO; }
+
+    /* ioctl contract: int 0/1 */
+	int v = *b ? 1 : 0;
+	if (copy_to_user(argp, &v, sizeof(v))) { kfree(b); return -EFAULT; }
+
+    dev_info(&dev->audio_ctrl->dev, "GET_MUTE byte=%u\n", *b);
+    kfree(b);
+    return 0;
 }
+
+/* ---- VOLUME (16-bit, 1/256 dB) ---- */
 
 static int uac_get_vol16(struct uac_dev *dev, u8 ch, u8 req, s16 *out)
 {
-	__le16 raw = 0;
-	int ret = usb_control_msg(dev->udev,
-		usb_rcvctrlpipe(dev->udev, 0),
-		req,                                // UAC_GET_MIN/MAX/CUR (0x82/0x83/0x81)
-		BMRT_CLASS_IF_IN,                   // 0xA1
-		uac_wValue(UAC_FU_VOLUME, ch),      // (0x02<<8)|ch  (ch=1 or 2)
-		uac_wIndex(dev->fu_id, dev->ac_ifnum), // (FU<<8)|AC_IF (2<<8)|0 for your device)
-		&raw, sizeof(raw),
-		1000);
-	if (ret != sizeof(raw))
-		return ret < 0 ? ret : -EIO;
+    int ret;
+    __le16 *raw = kmalloc(sizeof(*raw), GFP_KERNEL);
+    u8  bm = BMRT_CLASS_IF_IN;         /* 0xA1 */
+    u8  rq = req;                      /* 0x81/0x82/0x83 */
+    u16 wV = uac_wValue(UAC_FU_VOLUME, ch);
+    u16 wI = uac_wIndex(dev->fu_id, dev->ac_ifnum);
 
-	*out = (s16)le16_to_cpu(raw);
-	return 0;
+    if (!raw) return -ENOMEM;
+
+    ret = usb_control_msg(dev->udev, usb_rcvctrlpipe(dev->udev, 0),
+                          rq, bm, wV, wI, raw, sizeof(*raw), USB_CTRL_GET_TIMEOUT);
+
+    uac_log_ctrl(dev, "GET_VOL16", bm, rq, wV, wI, sizeof(*raw), ret);
+
+    if (ret != sizeof(*raw)) { kfree(raw); return ret < 0 ? ret : -EIO; }
+
+    *out = (s16)le16_to_cpu(*raw);
+    dev_info(&dev->audio_ctrl->dev, "GET_VOL16 payload(le)=0x%04x val=%d\n",
+             (unsigned)le16_to_cpu(*raw), *out);
+    kfree(raw);
+    return 0;
 }
 
 static int uac_set_vol16(struct uac_dev *dev, u8 ch, s16 val)
 {
-	__le16 raw = cpu_to_le16((u16)val);
-	int ret = usb_control_msg(dev->udev,
-		usb_sndctrlpipe(dev->udev, 0),
-		UAC_SET_CUR,                        // 0x01
-		BMRT_CLASS_IF_OUT,                  // 0x21
-		uac_wValue(UAC_FU_VOLUME, ch),
-		uac_wIndex(dev->fu_id, dev->ac_ifnum),
-		&raw, sizeof(raw),
-		1000);
-	return (ret == sizeof(raw)) ? 0 : (ret < 0 ? ret : -EIO);
-}
+    int ret;
+    __le16 *raw = kmalloc(sizeof(*raw), GFP_KERNEL);
+    u8  bm = BMRT_CLASS_IF_OUT;        /* 0x21 */
+    u8  rq = UAC_SET_CUR;              /* 0x01 */
+    u16 wV = uac_wValue(UAC_FU_VOLUME, ch);
+    u16 wI = uac_wIndex(dev->fu_id, dev->ac_ifnum);
 
+    if (!raw) return -ENOMEM;
+    *raw = cpu_to_le16((u16)val);
+
+    ret = usb_control_msg(dev->udev, usb_sndctrlpipe(dev->udev, 0),
+                          rq, bm, wV, wI, raw, sizeof(*raw), USB_CTRL_SET_TIMEOUT);
+
+
+    uac_log_ctrl(dev, "SET_VOL16", bm, rq, wV, wI, sizeof(*raw), ret);
+    dev_info(&dev->audio_ctrl->dev, "SET_VOL16 payload(le)=0x%04x val=%d\n",
+             (unsigned)le16_to_cpu(*raw), val);
+
+    kfree(raw);
+    return (ret == sizeof(*raw)) ? 0 : (ret < 0 ? ret : -EIO);
+}
+/* ---- Stereo helpers: volume lives on ch1 (L) and ch2 (R) ---- */
+static int uac_set_vol_stereo(struct uac_dev *dev, s16 val)
+{
+	    int ret = uac_set_vol16(dev, /*ch=*/1, val);  /* Left */
+	    if (ret) return ret;
+	    return uac_set_vol16(dev, /*ch=*/2, val);     /* Right */
+	}
+
+static int uac_get_vol_stereo_avg(struct uac_dev *dev, s16 *out)
+{
+	    s16 l = 0, r = 0;
+	    int ret = uac_get_vol16(dev, /*ch=*/1, UAC_GET_CUR, &l);
+	    if (ret) return ret;
+	    ret = uac_get_vol16(dev, /*ch=*/2, UAC_GET_CUR, &r);
+	    if (ret) return ret;
+	    *out = (l + r) / 2;
+	    return 0;
+}
 static long uac_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
 	struct uac_dev *dev = filp->private_data;
@@ -238,33 +296,37 @@ static long uac_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	int out, ret;
 	switch (cmd) {
 	case UAC_IOC_SET_MUTE:
-		return uac_set_mute(dev, true);
-
-	case UAC_IOC_CLR_MUTE:
-		return uac_set_mute(dev, false);
+		int in;
+		if (copy_from_user(&in, (void __user *)arg, sizeof(in)))
+				return -EFAULT;
+		if (in != 0 && in != 1)
+				return -EINVAL;
+		/* Mute is channel 0 (master) only on this device */
+		return uac_set_mute(dev, /*ch=*/0, in ? true : false);
 
 	case UAC_IOC_GET_MUTE:
-		return uac_get_mute(dev, (int __user *)arg);
+		return uac_get_mute(dev, 0, (int __user *)arg);
 
 	case UAC_IOC_GET_MIN_VOL:
-			ret = uac_get_vol16(dev, 1, UAC_GET_MIN, &v);
-			if (ret) return ret;
-			out = v;
-			return copy_to_user((int __user *)arg, &out, sizeof(out)) ? -EFAULT : 0;
+		/* Volume is on ch1/ch2; min is typically same for both – read Left */
+		ret = uac_get_vol16(dev, /*ch=*/1, UAC_GET_MIN, &v);
+		if (ret) return ret;
+		out = v;
+		return copy_to_user((int __user *)arg, &out, sizeof(out)) ? -EFAULT : 0;
 	case UAC_IOC_GET_MAX_VOL:
 			ret = uac_get_vol16(dev, 1, UAC_GET_MAX, &v);
 			if (ret) return ret;
 			out = v;
 			return copy_to_user((int __user *)arg, &out, sizeof(out)) ? -EFAULT : 0;
 	case UAC_IOC_GET_VOL:
-			ret = uac_get_vol16(dev, 1, UAC_GET_CUR, &v);
+			ret = uac_get_vol_stereo_avg(dev, &v);  /* average L/R */
 			if (ret) return ret;
 			out = v;
 			return copy_to_user((int __user *)arg, &out, sizeof(out)) ? -EFAULT : 0;
 	case UAC_IOC_SET_VOL: {
 			int in;
 			if (copy_from_user(&in, (void __user *)arg, sizeof(in))) return -EFAULT;
-			return uac_set_vol16(dev, 1, (s16)in);
+			return uac_set_vol_stereo(dev, (s16)in);
 	}
 	default:
 		return -EINVAL;
@@ -459,7 +521,6 @@ static void uac_disconnect(struct usb_interface *intf)
 		return;
 
 	ifnum = intf->cur_altsetting->desc.bInterfaceNumber;
-
 	/* stop future resubmits before killing URBs */
 	dev->shutting_down = true;
 

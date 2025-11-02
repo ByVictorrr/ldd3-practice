@@ -25,6 +25,11 @@ exec qemu-system-x86_64 -enable-kvm -cpu host -smp 2 -m 2G \
   -device e1000e,bus=rp0,id=nic0 \
   -device edu,id=edu0 \
   -device pc-testdev \
+  -audiodev none,id=nomap \
+  -audiodev sdl,id=snd0 \
   -device qemu-xhci,id=xhci \
-  -audiodev wav,id=cap0,path=/tmp/guest-audio.wav,out.frequency=48000  \
-  -device usb-audio,audiodev=cap0,bus=xhci.0
+  -device usb-audio,audiodev=snd0,bus=xhci.0 \
+  -device intel-hda -device hda-duplex,audiodev=snd0 \
+  -audiodev sdl,id=snd0
+   # -device usb-audio,audiodev=cap0,bus=xhci.0 \
+

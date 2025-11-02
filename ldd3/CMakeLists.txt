@@ -234,6 +234,69 @@ function(kmod_target NAME)
     )
 
 endfunction()
+# ---- Userspace helper binaries -> scp to guest ------------------------------
+function(userprog_target NAME)
+    set(options)
+    set(oneValueArgs REMOTE_DIR REMOTE_NAME)
+    set(multiValueArgs SOURCES INCLUDES LIBS)
+    cmake_parse_arguments(USR "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
+
+    if (NOT USR_SOURCES)
+        message(FATAL_ERROR "userprog_target(${NAME}) requires SOURCES")
+    endif()
+
+    if (NOT USR_REMOTE_DIR)
+        set(USR_REMOTE_DIR "/usr/local/bin")
+    endif()
+    if (NOT USR_REMOTE_NAME)
+        set(USR_REMOTE_NAME "${NAME}")
+    endif()
+
+    add_executable(${NAME} ${USR_SOURCES})
+
+    # --- NEW: nuke inherited directory-wide include dirs for this userspace target
+    # (prevents /lib/modules/.../build/include/linux/*.h from leaking in)
+    set_property(TARGET ${NAME} PROPERTY INCLUDE_DIRECTORIES "")
+
+    # Your local tool includes (e.g., for uac_ioctl.h)
+    if (USR_INCLUDES)
+        target_include_directories(${NAME} PRIVATE ${USR_INCLUDES})
+    endif()
+
+    if (USR_LIBS)
+        target_link_libraries(${NAME} PRIVATE ${USR_LIBS})
+    endif()
+
+    # --- NEW: push kernel include dirs AFTER system headers (gcc/clang)
+    # Use *one* item per flag so CMake doesn't split them.
+    target_compile_options(${NAME} PRIVATE
+            "$<$<COMPILE_LANGUAGE:C>:-idirafter${KDIR}/include>"
+            "$<$<COMPILE_LANGUAGE:C>:-idirafter${KDIR}/include/generated>"
+            "$<$<COMPILE_LANGUAGE:C>:-idirafter${KDIR}/include/uapi>"
+            "$<$<COMPILE_LANGUAGE:C>:-idirafter${KDIR}/include/generated/uapi>"
+            "$<$<COMPILE_LANGUAGE:C>:-idirafter${KDIR}/arch/${KARCH}/include>"
+            "$<$<COMPILE_LANGUAGE:C>:-idirafter${KDIR}/arch/${KARCH}/include/generated>"
+            "$<$<COMPILE_LANGUAGE:C>:-idirafter${KDIR}/arch/${KARCH}/include/uapi>"
+            "$<$<COMPILE_LANGUAGE:C>:-idirafter${KDIR}/arch/${KARCH}/include/generated/uapi>"
+    )
+
+    add_custom_target(${NAME}-push
+            DEPENDS qemu-up ${NAME}
+            COMMAND ${SCP_BIN} ${SCP_ARGS} $<TARGET_FILE:${NAME}> root@localhost:${USR_REMOTE_DIR}/${USR_REMOTE_NAME}
+            COMMAND ${SSH_BIN} ${SSH_ARGS} "chmod +x ${USR_REMOTE_DIR}/${USR_REMOTE_NAME}"
+            USES_TERMINAL
+            VERBATIM
+            COMMENT "scp ${NAME} -> ${USR_REMOTE_DIR}/${USR_REMOTE_NAME} in guest"
+    )
+
+    add_custom_target(${NAME}-run
+            DEPENDS ${NAME}-push
+            COMMAND ${SSH_BIN} ${SSH_ARGS} "${USR_REMOTE_DIR}/${USR_REMOTE_NAME} $<IF:$<BOOL:${ARGS}>,${ARGS},>"
+            USES_TERMINAL
+            VERBATIM
+            COMMENT "run ${USR_REMOTE_NAME} inside guest"
+    )
+endfunction()
 
 # Bring in subprojects (each chapter)
 add_subdirectory(ch02_hello)
@@ -248,4 +311,5 @@ add_subdirectory(ch10_interrupts)
 add_subdirectory(ch11_ktypes)
 add_subdirectory(ch12_pci)
 add_subdirectory(ch13_usb)
+add_subdirectory(ch14_device_model)
 
