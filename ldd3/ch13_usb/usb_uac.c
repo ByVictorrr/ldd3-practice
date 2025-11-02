@@ -26,7 +26,22 @@
 #define AUDIO_RING_SIZE 64*1024
 #define USB_AUDIO_VENDOR_ID    0x46f4
 #define USB_AUDIO_PRODUCT_ID     0x0002
+/* Request Type */
+#define BMRT_CLASS_IF_OUT  (USB_DIR_OUT | USB_TYPE_CLASS | USB_RECIP_INTERFACE) // 0x21
+#define BMRT_CLASS_IF_IN   (USB_DIR_IN  | USB_TYPE_CLASS | USB_RECIP_INTERFACE) // 0xA1
 
+/* Audio class request codes */
+#define UAC_SET_CUR 0x01
+#define UAC_GET_CUR 0x81
+#define UAC_GET_MIN 0x82
+#define UAC_GET_MAX 0x83
+
+/* Feature unit control selectors */
+#define UAC_FU_MUTE   0x01
+#define UAC_FU_VOLUME 0x02
+
+static inline __u16 uac_wValue(u8 cs, u8 ch)       { return (cs << 8) | ch; }
+static inline __u16 uac_wIndex(u8 fu_id, u8 ifnum) { return (fu_id << 8) | ifnum; }
 
 static struct usb_driver usb_audio_drv;
 
@@ -41,10 +56,10 @@ struct uac_dev
 	u8 ep_out; // ISO OUT endpoint <bit 7 = direction>; bit 0-3= endpoint # (0-15)>
 	u8 ac_ifnum;
 	u8 fu_id;
-	bool in_flight;
-	struct usb_anchor anchor;
+	struct urb *urbs[NUM_OF_URBS];
 	struct kfifo audio_ring;
 	struct wait_queue_head wait_queue;
+	bool shutting_down;
 
 };
 static void uac_fill_iso_frames(struct uac_dev *dev, struct urb *urb)
@@ -143,28 +158,10 @@ static int uac_open(struct inode *inode, struct file *filp)
 }
 static int uac_release(struct inode *inode, struct file *filp)
 {
-
-
-
 	return 0;
 }
 
-/* Request Type */
-#define BMRT_CLASS_IF_OUT  (USB_DIR_OUT | USB_TYPE_CLASS | USB_RECIP_INTERFACE) // 0x21
-#define BMRT_CLASS_IF_IN   (USB_DIR_IN  | USB_TYPE_CLASS | USB_RECIP_INTERFACE) // 0xA1
 
-/* Audio class request codes */
-#define UAC_SET_CUR 0x01
-#define UAC_GET_CUR 0x81
-#define UAC_GET_MIN 0x82
-#define UAC_GET_MAX 0x83
-
-/* Feature unit control selectors */
-#define UAC_FU_MUTE   0x01
-#define UAC_FU_VOLUME 0x02
-
-static inline __u16 uac_wValue(u8 cs, u8 ch)       { return (cs << 8) | ch; }
-static inline __u16 uac_wIndex(u8 fu_id, u8 ifnum) { return (fu_id << 8) | ifnum; }
 /* constants per your lsusb: FU=2, AC IF=0, Mute only on ch=0 */
 static int uac_set_mute(struct uac_dev *dev, bool on)
 {
@@ -236,38 +233,42 @@ static int uac_set_vol16(struct uac_dev *dev, u8 ch, s16 val)
 
 static long uac_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
-    struct uac_dev *dev = filp->private_data;
-    int ret;
+	struct uac_dev *dev = filp->private_data;
+	s16 v;
+	int out, ret;
+	switch (cmd) {
+	case UAC_IOC_SET_MUTE:
+		return uac_set_mute(dev, true);
 
-    switch (cmd) {
-		case UAC_IOC_SET_MUTE: return uac_set_mute(dev, true);
-		case UAC_IOC_CLR_MUTE: return uac_set_mute(dev, false);
-		case UAC_IOC_GET_MUTE: return uac_get_mute(dev, (int __user *)arg);
-		case UAC_IOC_GET_MIN_VOL:
-    	 s16 min=0, max=0, cur=0;
-    	ret = uac_get_vol16(dev, 1, UAC_GET_MIN, &min);
-    	dev_info(&dev->audio_ctrl->dev, "vol ch1 GET_MIN ret=%d val=%d\n", ret, min);
+	case UAC_IOC_CLR_MUTE:
+		return uac_set_mute(dev, false);
 
-    	ret = uac_get_vol16(dev, 1, UAC_GET_MAX, &max);
-    	dev_info(&dev->audio_ctrl->dev, "vol ch1 GET_MAX ret=%d val=%d\n", ret, max);
+	case UAC_IOC_GET_MUTE:
+		return uac_get_mute(dev, (int __user *)arg);
 
-    	ret = uac_get_vol16(dev, 1, UAC_GET_CUR, &cur);
-    	dev_info(&dev->audio_ctrl->dev, "vol ch1 GET_CUR ret=%d val=%d\n", ret, cur);
-
-    	if (!ret && min != max) {
-    		s16 mid = min + (s16)((max - min) / 2);
-    		ret = uac_set_vol16(dev, 1, mid);
-    		dev_info(&dev->audio_ctrl->dev, "vol ch1 SET_CUR(mid=%d) ret=%d\n", mid, ret);
-
-    		ret = uac_get_vol16(dev, 1, UAC_GET_CUR, &cur);
-    		dev_info(&dev->audio_ctrl->dev, "vol ch1 GET_CUR(after) ret=%d val=%d\n", ret, cur);
-    	}
-    		return 0;
-    	case UAC_IOC_SET_VOL:
-
-		default: return -EINVAL;
-    }
-	return ret;
+	case UAC_IOC_GET_MIN_VOL:
+			ret = uac_get_vol16(dev, 1, UAC_GET_MIN, &v);
+			if (ret) return ret;
+			out = v;
+			return copy_to_user((int __user *)arg, &out, sizeof(out)) ? -EFAULT : 0;
+	case UAC_IOC_GET_MAX_VOL:
+			ret = uac_get_vol16(dev, 1, UAC_GET_MAX, &v);
+			if (ret) return ret;
+			out = v;
+			return copy_to_user((int __user *)arg, &out, sizeof(out)) ? -EFAULT : 0;
+	case UAC_IOC_GET_VOL:
+			ret = uac_get_vol16(dev, 1, UAC_GET_CUR, &v);
+			if (ret) return ret;
+			out = v;
+			return copy_to_user((int __user *)arg, &out, sizeof(out)) ? -EFAULT : 0;
+	case UAC_IOC_SET_VOL: {
+			int in;
+			if (copy_from_user(&in, (void __user *)arg, sizeof(in))) return -EFAULT;
+			return uac_set_vol16(dev, 1, (s16)in);
+	}
+	default:
+		return -EINVAL;
+	}
 }
 
 
@@ -290,11 +291,21 @@ static void uac_callback(struct urb *urb)
 {
 	struct uac_dev *dev = urb->context;
 
-	if (urb->status && urb->status != -ENOENT && urb->status != -ECONNRESET)
-		dev_err(&dev->udev->dev, "uac: urb status %d\n", urb->status);
+	/* If teardown is in progress, or this URB is being killed, just exit */
+	if (dev->shutting_down ||
+		urb->status == -ENOENT ||        /* killed */
+		urb->status == -ECONNRESET ||    /* unlinked */
+		urb->status == -ESHUTDOWN)       /* ep/device disabled */
+			return;
 
+	if (urb->status)
+		dev_err(&dev->udev->dev, "uac: urb status %d\n", urb->status);
 	uac_fill_iso_frames(dev, urb);
-	usb_submit_urb(urb, GFP_ATOMIC);
+	if (!dev->shutting_down)
+	{
+		usb_submit_urb(urb, GFP_ATOMIC);
+
+	}
 }
 
 
@@ -351,9 +362,9 @@ static int uac_probe(struct usb_interface *intf, const struct usb_device_id *id)
 {
 	int ret;
 
-	struct uac_dev * dev = devm_kzalloc(&intf->dev, sizeof(*dev), GFP_KERNEL);
 	struct usb_interface *stream_intf = NULL;
 	struct usb_device *udev = interface_to_usbdev(intf);
+	struct uac_dev * dev = devm_kzalloc(&udev->dev, sizeof(*dev), GFP_KERNEL);
 	dev->udev = udev;
 	if (intf->cur_altsetting->desc.bInterfaceNumber == AUDIO_STREAMING_INTERFACE)
 	{
@@ -396,10 +407,9 @@ static int uac_probe(struct usb_interface *intf, const struct usb_device_id *id)
 
 	spin_lock_init(&dev->lock);
 	init_waitqueue_head(&dev->wait_queue);
-	dev->in_flight = false;
 	ret = kfifo_alloc(&dev->audio_ring, AUDIO_RING_SIZE, GFP_KERNEL);
+	dev->shutting_down = false;
 	if (ret) return ret;
-	init_usb_anchor(&dev->anchor);
 	usb_set_intfdata(intf, dev);
 	// allocate urb buffers
 	if (stream_intf)
@@ -417,6 +427,7 @@ static int uac_probe(struct usb_interface *intf, const struct usb_device_id *id)
 			urb->number_of_packets = NUM_OF_PACKETS;
 			urb->pipe = usb_sndisocpipe(udev, dev->ep_out); // OUT playback sink
 			urb->transfer_buffer = usb_alloc_coherent(udev, BUF_SIZE*NUM_OF_PACKETS, GFP_KERNEL, &urb->transfer_dma);
+
 			if (!urb->transfer_buffer)
 			{
 				usb_free_urb(urb);
@@ -428,7 +439,7 @@ static int uac_probe(struct usb_interface *intf, const struct usb_device_id *id)
 				urb->iso_frame_desc[j].offset = j * BUF_SIZE;
 				urb->iso_frame_desc[j].length = BUF_SIZE;
 			}
-			usb_anchor_urb(urb, &dev->anchor);
+			dev->urbs[i] = urb;
 			if (usb_submit_urb(urb, GFP_KERNEL))
 			{
 				dev_err(&intf->dev, "uac: failed to submit urb\n");
@@ -439,20 +450,53 @@ static int uac_probe(struct usb_interface *intf, const struct usb_device_id *id)
 	dev_info(&intf->dev, "uac: initialized\n");
 	return 0;
 }
-
 static void uac_disconnect(struct usb_interface *intf)
 {
 	struct uac_dev *dev = usb_get_intfdata(intf);
-	if (!dev) return;
+	int ifnum;
 
-	usb_kill_anchored_urbs(&dev->anchor);
-	usb_scuttle_anchored_urbs(&dev->anchor);
-	kfifo_free(&dev->audio_ring);
+	if (!dev)
+		return;
 
-	// If you registered both interfaces:
-	usb_deregister_dev(intf, &uac_class);
+	ifnum = intf->cur_altsetting->desc.bInterfaceNumber;
 
+	/* stop future resubmits before killing URBs */
+	dev->shutting_down = true;
+
+	/* clear THIS interface's intfdata; leave the peer to usbcore */
 	usb_set_intfdata(intf, NULL);
+
+	if (ifnum == AUDIO_STREAMING_INTERFACE) {
+		/* 1) remove /dev/uac%d first so userspace can’t re-open */
+		usb_deregister_dev(intf, &uac_class);
+
+		/* 2) kill & free URBs + their coherent buffers */
+		for (int i = 0; i < NUM_OF_URBS; i++) {
+			struct urb *urb = dev->urbs[i];
+			if (!urb) continue;
+
+			usb_kill_urb(urb);  /* waits for completion to return */
+
+			if (urb->transfer_buffer)
+				usb_free_coherent(dev->udev,
+								  BUF_SIZE * NUM_OF_PACKETS,
+								  urb->transfer_buffer,
+								  urb->transfer_dma);
+
+			usb_free_urb(urb);
+			dev->urbs[i] = NULL;
+		}
+
+		/* 3) wake waiters and free FIFOs */
+		wake_up_interruptible(&dev->wait_queue);
+		kfifo_free(&dev->audio_ring);
+
+		/* If you used manual kzalloc for uac_dev (Option B), free it now */
+		// kfree(dev);
+
+	} else if (ifnum == AUDIO_CONTROL_INTERFACE) {
+		/* AC path: no heavy teardown. Just clearing its own intfdata above is enough. */
+	}
 }
 static const struct usb_device_id uac_ids[] = {
 	{USB_DEVICE(USB_AUDIO_VENDOR_ID, USB_AUDIO_PRODUCT_ID)},
