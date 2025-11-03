@@ -203,6 +203,7 @@ function(kmod_target NAME)
             DEPENDS qemu-up ${NAME}
             COMMAND ${SCP_BIN} ${SCP_ARGS} "${STAGE}/${NAME}.ko" root@localhost:/tmp/${NAME}.ko
             COMMAND ${SSH_BIN} ${SSH_ARGS} "insmod /tmp/${NAME}.ko ${_module_params} || dmesg | tail -n 200"
+            COMMAND ${SSH_BIN} ${SSH_ARGS} "echo 'module ${NAME} +p' > /sys/kernel/debug/dynamic_debug/control"
             USES_TERMINAL
             VERBATIM
             COMMENT "insmod ${NAME} on guest"

@@ -8,6 +8,7 @@ userprog_target(uacctl
         SOURCES uacctl.c
         INCLUDES uac_ioctl.h
         # LIBS m pthread  # add if you need to link extras
+        LIBS m
         REMOTE_DIR /usr/local/bin
         REMOTE_NAME uacctl
 )
