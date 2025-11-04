@@ -6,6 +6,8 @@ BZ=$KSRCDIR/linux-stable/arch/x86/boot/bzImage
 PROJ=/home/victord/git/ldd3-practice
 FS=$PROJ/toolchain/qemu-image/ldd3.qcow2
 SEED_ISO=$PROJ/toolchain/qemu-image/seed/seed.iso
+CMD_LINE="root=/dev/vda1 rw rootwait console=ttyS0,115200 earlycon=ttyS0,115200 kgdb.use_kdb=0 kgdboc=ttyS1,115200 nokaslr pcie_ports=native \
+          dummy_hcd.is_high_speed=0 dummy_hcd.is_super_speed=0 dummy_hcd.num=2 g_serial.enable=0"
 
 exec qemu-system-x86_64 -enable-kvm -cpu host -smp 2 -m 2G \
   -kernel "$BZ" \
@@ -17,7 +19,7 @@ exec qemu-system-x86_64 -enable-kvm -cpu host -smp 2 -m 2G \
   -serial chardev:kgdb \
   -fsdev local,id=fs0,path="$PROJ",security_model=none \
   -device virtio-9p-pci,fsdev=fs0,mount_tag=hostshare \
-  -append "root=/dev/vda1 rw rootwait console=ttyS0,115200 earlycon=ttyS0,115200 kgdb.use_kdb=0 kgdboc=ttyS1,115200 nokaslr pcie_ports=native" \
+  -append
   -netdev user,id=net0,hostfwd=tcp::2222-:22,hostfwd=udp::5557-:5555 \
   -device virtio-net-pci,netdev=net0 \
   -machine q35 \
