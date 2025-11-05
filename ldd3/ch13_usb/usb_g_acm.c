@@ -1,84 +1,140 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/usb/composite.h>
-#include "drivers/usb/gadget/function/f_ecm.h"
 
-
-static struct usb_function_instance *fi_comm;
-static struct usb_function *f_comm;
-static struct usb_configuration ecm_cfg = {
-    .label        = "CDC ECM",
-    .bmAttributes = USB_CONFIG_ATT_SELFPOWER,
-    .MaxPower     = 2,       /* set appropriately */
+/* ---------- Device strings ---------- */
+enum { STR_MANUF, STR_PRODUCT, STR_SERIAL };
+static struct usb_string dev_strings[] = {
+    [STR_MANUF]   = { .s = "Manufacturer Name" },
+    [STR_PRODUCT] = { .s = "Product Name" },
+    [STR_SERIAL]  = { .s = "Serial Number" },
+    { } /* end */
 };
-static int g_ecm_bind(struct usb_composite_dev *cdev)
+static struct usb_gadget_strings dev_stringtab = {
+    .language = 0x0409,
+    .strings  = dev_strings,
+};
+/* ---------- Config strings ---------- */
+static struct usb_string cfg_strings[] = {
+    { .s = "Conf 1" },
+    { } /* end */
+};
+static struct usb_gadget_strings cfg_stringtab = {
+    .language = 0x0409,
+    .strings  = cfg_strings,
+};
+static struct usb_gadget_strings *cfg_stringtabs[] = {
+    &cfg_stringtab, NULL,
+};
+
+/* ---------- Device descriptor ---------- */
+static struct usb_device_descriptor g_acm_dev = {
+    .bLength            = sizeof(struct usb_device_descriptor),
+    .bDescriptorType    = USB_DT_DEVICE,
+    .bcdUSB             = cpu_to_le16(0x0200),
+    .bDeviceClass       = USB_CLASS_PER_INTERFACE,
+    .bMaxPacketSize0    = 64,
+    .bcdDevice          = cpu_to_le16(0x0100),
+    .idVendor           = cpu_to_le16(0x1d6b),
+    .idProduct          = cpu_to_le16(0x0104),
+    .bNumConfigurations = 1,
+    /* i* set in bind() */
+};
+
+/* ---------- Add ACM function into a configuration ---------- */
+static int acm_do_config(struct usb_configuration *c)
 {
     int ret;
-    /* create configuration */
-    ret = usb_add_config_only(cdev, &ecm_cfg);;
-    if (ret) return ret;
-    /* Allocate a ethernet function */
-    fi_comm = usb_get_function_instance("ecm");
-    if (!fi_comm) return -ENOMEM;
-    /* --- minimal fix: set distinct, LAA, unicast MACs on the instance --- */
-    struct f_ecm_opts *opts =
-        container_of(fi_comm, struct f_ecm_opts, func_inst);
-    const u8 dev[ETH_ALEN]  = {0x02,0x12,0x34,0x56,0x78,0x9a};
-    const u8 host[ETH_ALEN] = {0x06,0x12,0x34,0x56,0x78,0x9a};
-    ether_addr_copy(opts->dev_addr,  dev);
-    ether_addr_copy(opts->host_addr, host);
-    opts->ethaddr_valid  = true;
-    opts->hostaddr_valid = true;
-    /* create an actual function */
-    f_comm = usb_get_function(fi_comm);
-    if (IS_ERR(f_comm))
-    {
-        usb_put_function_instance(fi_comm);
-        return PTR_ERR(f_comm);
-    }
-    /* Add function to configuration */
-    ret = usb_add_function(&ecm_cfg, f_comm);
-    if (ret)
-    {
-        usb_put_function_instance(fi_comm);
-        usb_put_function(f_comm);
+    struct usb_function_instance *fi;
+    struct usb_function *f;
+
+    fi = usb_get_function_instance("acm");
+    if (IS_ERR(fi))
+        return PTR_ERR(fi);
+
+    f = usb_get_function(fi);
+    if (IS_ERR(f)) {
+        ret = PTR_ERR(f);
+        usb_put_function_instance(fi);
         return ret;
     }
-    return 0;
+
+    ret = usb_add_function(c, f);
+    if (ret) {
+        /* No ownership taken on failure */
+        usb_put_function(f);
+        usb_put_function_instance(fi);
+    }
+    dev_info(&c->cdev->gadget->dev, "acm: add_function -> %d\n", ret);
+    return ret;
 }
-static struct usb_string strings_en[] = {
-    { .id = 1, .s = "Manufacturer Name" },
-    { .id = 2, .s = "Product Name" },
-    { .id = 3, .s = "Serial Number" },
-    { } /* Terminating entry */
+
+/* ---------- Composite bind ---------- */
+static int g_acm_bind(struct usb_composite_dev *cdev)
+{
+    int ret;
+    struct usb_configuration *cfg;
+    enum usb_device_speed old;
+
+    usb_ep_autoconfig_reset(cdev->gadget);
+
+    /* Device string IDs */
+    ret = usb_string_ids_tab(cdev, dev_strings);
+    if (ret < 0)
+        return ret;
+    g_acm_dev.iManufacturer = dev_strings[STR_MANUF].id;
+    g_acm_dev.iProduct      = dev_strings[STR_PRODUCT].id;
+    g_acm_dev.iSerialNumber = dev_strings[STR_SERIAL].id;
+
+    /* Config string IDs */
+    ret = usb_string_ids_tab(cdev, cfg_strings);
+    if (ret < 0)
+        return ret;
+
+    /* Per-bind configuration (device-managed => auto-freed) */
+    cfg = devm_kzalloc(&cdev->gadget->dev, sizeof(*cfg), GFP_KERNEL);
+    if (!cfg)
+        return -ENOMEM;
+
+    cfg->label               = "CDC ACM";
+    cfg->bmAttributes        = USB_CONFIG_ATT_ONE; /* bit7 set (bus-powered) */
+    cfg->MaxPower            = 250;                /* 500 mA in 2 mA units */
+    cfg->bConfigurationValue = 1;                  /* non-zero is required */
+    cfg->iConfiguration      = cfg_strings[0].id;
+    cfg->strings             = cfg_stringtabs;
+
+    dev_info(&cdev->gadget->dev,
+        "g_acm: cfg attrs=0x%02x MaxPower=%u bCfgVal=%u iCfg=%d\n",
+        cfg->bmAttributes, cfg->MaxPower, cfg->bConfigurationValue, cfg->iConfiguration);
+
+    /* Force Full-Speed during add_config to avoid dummy_hcd -EINVAL */
+    old = cdev->gadget->max_speed;
+    cdev->gadget->max_speed = USB_SPEED_FULL;
+    ret = usb_add_config(cdev, cfg, acm_do_config);
+    cdev->gadget->max_speed = old;
+
+    dev_info(&cdev->gadget->dev, "g_acm: add_config ret=%d\n", ret);
+    return ret;
+}
+
+/* ---------- Driver boilerplate ---------- */
+static struct usb_gadget_strings *g_acm_strings[] = { &dev_stringtab, NULL };
+
+static struct usb_composite_driver g_acm_driver = {
+    .name      = "g_acm",
+    .dev       = &g_acm_dev,
+    .strings   = g_acm_strings,
+    .bind      = g_acm_bind,
+    .max_speed = USB_SPEED_FULL,  /* safest on dummy_hcd/QEMU */
 };
 
-static struct usb_gadget_strings stringtab_en = {
-    .language = 0x0409, /* en-US */
-    .strings = strings_en,
-};
-struct usb_composite_driver g_ecm_driver = {
-    .name = "g_ecm",
-    .dev = &(struct  usb_device_descriptor){
-        .bLength = sizeof(struct usb_device_descriptor),
-        .bDescriptorType = USB_DT_DEVICE,
-        .bcdUSB = cpu_to_le16(0x0200),
-        .idVendor = cpu_to_le16(0x1d6b),
-        .idProduct = cpu_to_le16(0x0104),
-        .iManufacturer = 1,
-        .iProduct = 2,
-        .iSerialNumber = 3,
-    },
-    .strings = (struct usb_gadget_strings *[]){&stringtab_en, NULL},
-    .bind = g_ecm_bind,
-};
-
-static int __init g_ecm_init(void)
+static int __init g_acm_init(void)
 {
-    return usb_composite_probe(&g_ecm_driver);
+    return usb_composite_probe(&g_acm_driver);
 }
-static void __exit g_ecm_exit(void)
+static void __exit g_acm_exit(void)
 {
-    usb_composite_unregister(&g_ecm_driver);
+    usb_composite_unregister(&g_acm_driver);
 }
-module_init(g_ecm_init);
-module_exit(g_ecm_exit);
+module_init(g_acm_init);
+module_exit(g_acm_exit);
 MODULE_LICENSE("GPL");

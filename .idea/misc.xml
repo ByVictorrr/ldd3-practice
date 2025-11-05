@@ -3,7 +3,7 @@
   <component name="CMakePythonSetting">
     <option name="pythonIntegrationState" value="YES" />
   </component>
-  <component name="CMakeWorkspace" PROJECT_DIR="$PROJECT_DIR$/rpi-projects">
+  <component name="CMakeWorkspace" PROJECT_DIR="$PROJECT_DIR$/ldd3">
     <contentRoot DIR="$PROJECT_DIR$" />
   </component>
   <component name="ProjectRootManager" version="2" project-jdk-name="Python 3.9" project-jdk-type="Python SDK" />

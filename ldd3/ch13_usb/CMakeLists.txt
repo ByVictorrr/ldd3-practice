@@ -12,3 +12,5 @@ userprog_target(uacctl
         REMOTE_DIR /usr/local/bin
         REMOTE_NAME uacctl
 )
+
+kmod_target(usb_g_acm SOURCES usb_g_acm.c)
