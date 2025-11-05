@@ -1,108 +1,109 @@
 cmake_minimum_required(VERSION 3.16)
 
-# -----------------------------------------------------------------------------
-# Project & global config
-# -----------------------------------------------------------------------------
 project(rpi_kmods NONE)
 set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_C_STANDARD 11)
-set(CMAKE_C_EXTENSIONS ON)     # kernel prefers gnu11
+set(CMAKE_C_EXTENSIONS ON) # kernel prefers gnu11
 
-# -----------------------------------------------------------------------------
-# Detect running kernel / arch (when configuring on the Pi)
-# -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------#
+# Options
+# -----------------------------------------------------------------------------#
+option(IDE_ONLY "Allow configure to succeed for IDE indexing even if headers are incomplete" OFF)
+option(KMOD_COPY_SOURCES "Copy sources instead of creating symlinks" ON)
+option(KMOD_VERBOSE "Enable verbose kbuild output" OFF)
+set(KMOD_STAGE_ROOT "${CMAKE_BINARY_DIR}/kmods" CACHE PATH "Where kmod sources are staged")
+set(KMOD_GLOBAL_EXTRA_CFLAGS "" CACHE STRING "Global extra C flags for all kmods")
+
+# -----------------------------------------------------------------------------#
+# Host kernel + arch
+# -----------------------------------------------------------------------------#
 execute_process(COMMAND uname -r OUTPUT_VARIABLE KREL OUTPUT_STRIP_TRAILING_WHITESPACE)
 execute_process(COMMAND uname -m OUTPUT_VARIABLE KMACH OUTPUT_STRIP_TRAILING_WHITESPACE)
 
-# Kernel arch mapping
 if (KMACH MATCHES "^(aarch64|arm64)$")
     set(KARCH arm64)
 elseif (KMACH MATCHES "^(armv6|armv7|arm)$")
     set(KARCH arm)
 else()
-    set(KARCH x86)  # fallback if configuring off-target
+    set(KARCH x86)
 endif()
 
-# -----------------------------------------------------------------------------
-# Kernel directories
-#   KDIR  -> /lib/modules/$(uname -r)/build       (kbuild "build" tree)
-#   KSRC  -> kernel source tree that contains include/uapi/* (split packages)
-# -----------------------------------------------------------------------------
-set(KDIR "/lib/modules/${KREL}/build" CACHE PATH "Kernel build directory (kbuild)")
-set(KSRC "" CACHE PATH "Kernel *source* directory (if split from KDIR)")
+# -----------------------------------------------------------------------------#
+# Kernel directories (cache variables)
+# -----------------------------------------------------------------------------#
+set(_HOME_RPI_LINUX "$ENV{HOME}/rpi-linux")
 
-# --- Robust autodetect for Raspberry Pi split headers ------------------------
-# If KSRC wasn't provided, try the 'source' symlink first...
+# Define cache entries (may be empty initially)
+set(KDIR "" CACHE PATH "Kernel build directory (kbuild; includes include/generated/*)")
+set(KSRC "" CACHE PATH "Kernel *source* directory (includes include/uapi/*)")
+
+# If neither provided, try ~/rpi-linux FIRST (only if prepared)
+if (NOT KDIR AND NOT KSRC AND EXISTS "${_HOME_RPI_LINUX}/include/generated/autoconf.h")
+    set(KDIR "${_HOME_RPI_LINUX}" CACHE PATH "" FORCE)
+    set(KSRC "${_HOME_RPI_LINUX}" CACHE PATH "" FORCE)
+endif()
+
+# Fallbacks
+if (NOT KDIR)
+    set(KDIR "/lib/modules/${KREL}/build" CACHE PATH "" FORCE)
+endif()
 if (NOT KSRC)
     if (EXISTS "${KDIR}/source/include/linux")
-        set(KSRC "${KDIR}/source")
+        set(KSRC "${KDIR}/source" CACHE PATH "" FORCE)
     else()
-        set(KSRC "${KDIR}")
+        set(KSRC "${KDIR}" CACHE PATH "" FORCE)
     endif()
 endif()
 
-# If KSRC doesn't actually contain UAPI, try to find a matching *-common-rpi tree
+# If KSRC still doesn't contain UAPI, probe Pi split-headers (*-rpt-common-rpi)
 if (NOT EXISTS "${KSRC}/include/uapi/linux/types.h")
-    # common patterns used by Raspberry Pi header packages
-    file(GLOB _RPI_COMMON_CAND
-            LIST_DIRECTORIES TRUE
+    file(GLOB _RPI_COMMON_CAND LIST_DIRECTORIES TRUE
             "/usr/src/linux-headers-*common-rpi"
             "/usr/src/linux-headers-*-rpt-common-rpi"
-            "/usr/src/rpi-linux-headers-*common*"
-    )
-    set(_FOUND_COMMON FALSE)
+            "/usr/src/rpi-linux-headers-*common*")
     foreach(_c ${_RPI_COMMON_CAND})
         if (EXISTS "${_c}/include/uapi/linux/types.h")
-            set(KSRC "${_c}")
-            set(_FOUND_COMMON TRUE)
+            set(KSRC "${_c}" CACHE PATH "" FORCE)
             break()
         endif()
     endforeach()
-    if (NOT _FOUND_COMMON)
+endif()
+
+# Auto-switch: if current KDIR lacks autoconf.h but ~/rpi-linux is ready, FORCE-switch.
+set(_autoconf "${KDIR}/include/generated/autoconf.h")
+if (NOT EXISTS "${_autoconf}" AND NOT (KDIR STREQUAL "${_HOME_RPI_LINUX}") AND
+        EXISTS "${_HOME_RPI_LINUX}/include/generated/autoconf.h")
+    message(STATUS "KDIR '${KDIR}' lacks include/generated/autoconf.h; switching to ${_HOME_RPI_LINUX}")
+    set(KDIR "${_HOME_RPI_LINUX}" CACHE PATH "" FORCE)
+    set(KSRC "${_HOME_RPI_LINUX}" CACHE PATH "" FORCE)
+    set(_autoconf "${KDIR}/include/generated/autoconf.h")
+endif()
+
+# Sanity (soften with IDE_ONLY)
+if (NOT EXISTS "${_autoconf}")
+    if (IDE_ONLY)
         message(WARNING
-                "Could not locate UAPI headers (linux/types.h). "
-                "KSRC currently '${KSRC}'. If you have a split header install, point KSRC to the "
-                " '*-common-rpi' directory, e.g. -DKSRC=/usr/src/linux-headers-<ver>-rpt-common-rpi")
+                "Missing ${_autoconf}. Proceeding due to IDE_ONLY=ON (indexing-only).\n"
+                "If using ~/rpi-linux, run:\n"
+                "  make -C $ENV{HOME}/rpi-linux olddefconfig && make -C $ENV{HOME}/rpi-linux prepare modules_prepare")
+    else()
+        message(FATAL_ERROR
+                "Kernel headers at ${KDIR} look incomplete (missing include/generated/autoconf.h).\n"
+                "If using ~/rpi-linux, run:\n"
+                "  make -C $ENV{HOME}/rpi-linux olddefconfig && make -C $ENV{HOME}/rpi-linux prepare modules_prepare\n"
+                "Current KDIR: ${KDIR}")
     endif()
 endif()
 
-# -----------------------------------------------------------------------------
-# Early sanity checks so we fail fast with a helpful message
-# -----------------------------------------------------------------------------
-if (NOT EXISTS "${KDIR}/include/generated/autoconf.h")
-    message(FATAL_ERROR
-            "Kernel headers at ${KDIR} look incomplete or incorrect.\n"
-            "Ensure /lib/modules/${KREL}/build points to packaged headers "
-            "and contains include/generated/autoconf.h.\n"
-            "Current KDIR: ${KDIR}\n"
-    )
-endif()
-
-# Module.symvers helps modpost (not strictly required to compile)
 if (NOT EXISTS "${KDIR}/Module.symvers")
     message(WARNING
-            "Module.symvers not found in ${KDIR}. modpost may warn or fail.\n"
-            "On Raspberry Pi headers this usually exists. If using a custom tree, "
-            "build at least one module or install the packaged linux-headers-${KREL}.\n"
-            "Current KDIR: ${KDIR}\n"
-    )
+            "Module.symvers not found in ${KDIR}. modpost may warn or fail.")
 endif()
 
-# -----------------------------------------------------------------------------
-# Options for staging & quality-of-life
-# -----------------------------------------------------------------------------
-set(KMOD_STAGE_ROOT "${CMAKE_BINARY_DIR}/kmods"
-        CACHE PATH "Root directory where kmod sources are staged for kbuild")
-option(KMOD_COPY_SOURCES "Copy sources instead of creating symlinks" ON)
-set(KMOD_GLOBAL_EXTRA_CFLAGS "" CACHE STRING "Global extra C flags for all kmods")
-option(KMOD_VERBOSE "Enable verbose kbuild output" OFF)
-
-# -----------------------------------------------------------------------------
-# Kernel include directories used by IDE helper targets (for parsing only)
-#   Generated headers come from ${KDIR}/include/generated (+ arch/generated)
-#   Source headers (linux/*, uapi/*, arch/*) come from ${KSRC}
-# -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------#
+# Kernel include directories (for IDE parsing too)
+# -----------------------------------------------------------------------------#
 set(_KINC
         ${KDIR}/include/generated
         ${KDIR}/include/generated/uapi
@@ -110,22 +111,10 @@ set(_KINC
         ${KSRC}/include/uapi
 )
 
-# Arch-specific source includes from KSRC
 if (KARCH STREQUAL "arm64")
     list(APPEND _KINC
             ${KSRC}/arch/arm64/include
             ${KSRC}/arch/arm64/include/uapi
-    )
-elseif (KARCH STREQUAL "arm")
-    list(APPEND _KINC
-            ${KSRC}/arch/arm/include
-            ${KSRC}/arch/arm/include/uapi
-    )
-endif()
-
-# Arch-specific *generated* includes from KDIR (crucial for Pi headers)
-if (KARCH STREQUAL "arm64")
-    list(APPEND _KINC
             ${KDIR}/arch/arm64/include
             ${KDIR}/arch/arm64/include/uapi
             ${KDIR}/arch/arm64/include/generated
@@ -133,6 +122,8 @@ if (KARCH STREQUAL "arm64")
     )
 elseif (KARCH STREQUAL "arm")
     list(APPEND _KINC
+            ${KSRC}/arch/arm/include
+            ${KSRC}/arch/arm/include/uapi
             ${KDIR}/arch/arm/include
             ${KDIR}/arch/arm/include/uapi
             ${KDIR}/arch/arm/include/generated
@@ -140,19 +131,20 @@ elseif (KARCH STREQUAL "arm")
     )
 endif()
 
-# (Optional) Also inject globally so standalone files in the IDE parse decently
-include_directories(${_KINC})
+include_directories(SYSTEM ${_KINC})
+
 add_custom_target(headers
+        COMMAND ${CMAKE_COMMAND} -E echo "KREL=${KREL}"
+        COMMAND ${CMAKE_COMMAND} -E echo "KARCH=${KARCH}"
         COMMAND ${CMAKE_COMMAND} -E echo "KDIR=${KDIR}"
         COMMAND ${CMAKE_COMMAND} -E echo "KSRC=${KSRC}"
-        COMMAND ${CMAKE_COMMAND} -E echo "KARCH=${KARCH}"
         COMMAND ${CMAKE_COMMAND} -E echo "KINC (search order):"
         COMMAND ${CMAKE_COMMAND} -E echo "${_KINC}"
 )
 
-# -----------------------------------------------------------------------------
-# Internal: helper to stage files (copy or symlink) into a per-target directory
-# -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------#
+# Internal staging helper
+# -----------------------------------------------------------------------------#
 function(_kmod_stage SRC DEST_DIR)
     file(MAKE_DIRECTORY "${DEST_DIR}")
     get_filename_component(_base "${SRC}" NAME)
@@ -166,14 +158,9 @@ function(_kmod_stage SRC DEST_DIR)
     endif()
 endfunction()
 
-# -----------------------------------------------------------------------------
-# Public API: kmod_target(NAME
-#   SOURCES s1.c s2.c ...
-#   [HEADERS h1.h ...]
-#   [EXTRA_CFLAGS "..."]  # added to kbuild's EXTRA_CFLAGS
-#   [MODULE_PARAMS "..."] # passed to insmod target
-# )
-# -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------#
+# Public API: kmod_target(NAME ... )
+# -----------------------------------------------------------------------------#
 function(kmod_target NAME)
     set(oneValueArgs EXTRA_CFLAGS MODULE_PARAMS)
     set(multiValueArgs SOURCES HEADERS)
@@ -183,11 +170,9 @@ function(kmod_target NAME)
         message(FATAL_ERROR "kmod_target(${NAME}) requires SOURCES")
     endif()
 
-    # Per-target stage dir (inside KMOD_STAGE_ROOT)
     set(STAGE "${KMOD_STAGE_ROOT}/${NAME}")
     file(MAKE_DIRECTORY "${STAGE}")
 
-    # Collect objects & include dirs; stage sources/headers for kbuild
     set(OBJS "")
     set(INCDIRS "")
     foreach(src ${KMOD_SOURCES})
@@ -219,7 +204,7 @@ function(kmod_target NAME)
         string(APPEND MK "${NAME}-objs := ${REST_OBJS}\n")
     endif()
 
-    # Compose EXTRA_CFLAGS (per-target + global) with include dirs for out-of-tree
+    # Compose EXTRA_CFLAGS
     set(INCFLAGS "")
     foreach(d ${INCDIRS})
         string(APPEND INCFLAGS " -I${d}")
@@ -255,35 +240,22 @@ function(kmod_target NAME)
             WORKING_DIRECTORY "${STAGE}"
             VERBATIM
     )
-
-    # Real build target that produces the .ko
     add_custom_target(${NAME} DEPENDS "${STAGE}/${NAME}.ko")
 
-    # -----------------------------------------------------------------------------
-    # IDE/Indexing helper: OBJECT target with kernel include dirs & defines
-    # (EXCLUDE_FROM_ALL => never actually builds; only feeds compile_commands.json)
-    # -----------------------------------------------------------------------------
+    # IDE helper (never builds; feeds compile_commands.json)
     set(_ide_srcs "")
     foreach(_s ${KMOD_SOURCES} ${KMOD_HEADERS})
         get_filename_component(_abs "${_s}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
         list(APPEND _ide_srcs "${_abs}")
     endforeach()
-
     add_library(${NAME}__ideobj OBJECT ${_ide_srcs})
     set_target_properties(${NAME}__ideobj PROPERTIES EXCLUDE_FROM_ALL YES)
 
-    # Kernel + module includes for IDE parsing (no host headers)
-    target_include_directories(${NAME}__ideobj SYSTEM PRIVATE
-            ${INCDIRS}
-            ${_KINC}
-    )
-
+    target_include_directories(${NAME}__ideobj SYSTEM PRIVATE ${INCDIRS} ${_KINC})
     target_compile_definitions(${NAME}__ideobj PRIVATE
-            __KERNEL__
-            MODULE
+            __KERNEL__ MODULE
             $<$<STREQUAL:${KARCH},arm64>:__aarch64__>
     )
-
     target_compile_options(${NAME}__ideobj PRIVATE
             -std=gnu11
             -nostdinc
@@ -295,9 +267,7 @@ function(kmod_target NAME)
 
     add_custom_target(${NAME}-ide SOURCES ${_ide_srcs})
 
-    # -----------------------------------------------------------------------------
-    # Convenience targets: insmod / rmmod / dmesg / clean
-    # -----------------------------------------------------------------------------
+    # Convenience targets
     set(_params "")
     if (KMOD_MODULE_PARAMS)
         set(_params "${KMOD_MODULE_PARAMS}")
@@ -323,8 +293,7 @@ function(kmod_target NAME)
     )
 endfunction()
 
-# -----------------------------------------------------------------------------
-# Add your module subdirectories here
-# Each subdir should call: kmod_target(<name> SOURCES foo.c [HEADERS ...] [...])
-# -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------#
+# Modules
+# -----------------------------------------------------------------------------#
 add_subdirectory(adc)
