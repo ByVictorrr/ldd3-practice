@@ -1,0 +1,16 @@
+/dts-v1/;
+/plugin/;
+
+/{
+	compatible = "brcm,bcm2712";
+	fragment@0{
+		// enable the primary I2S interface
+		target = <&i2s0>; // uses I2S interface 0 (GPIO 18-21)
+		__overlay__{ // merge properties with existing node specified by target
+			status = "okay"; // enable the interface
+			compatible = "tutorial,pcm5102a";
+			pinctrl-0 = <&i2s0_pins>; // deference the pins
+			pinctrl-names = "default";
+		};
+	};
+};

@@ -15,6 +15,19 @@
             <excludedPath local="true" path="$PROJECT_DIR$/ldd3/cmake-build-ldd3-debug" />
             <excludedPath local="true" path="$PROJECT_DIR$/rpi-projects/cmake-build-rpi-debug" />
             <excludedPath local="true" path="$PROJECT_DIR$/rpi-projects/adc/cmake-build-rpi-debug" />
+            <excludedPath local="true" path="$PROJECT_DIR$/toolchain/qemu-image" />
+          </excludedPaths>
+        </serverdata>
+      </paths>
+      <paths name="rpi-home">
+        <serverdata>
+          <mappings>
+            <mapping local="$PROJECT_DIR$" web="/" />
+          </mappings>
+          <excludedPaths>
+            <excludedPath local="true" path="$PROJECT_DIR$/toolchain/qemu-image" />
+            <excludedPath local="true" path="$PROJECT_DIR$/toolchain/qemu-image/ldd3.qcow2" />
+            <excludedPath local="true" path="$PROJECT_DIR$/toolchain/qemu-image/ubuntu-amd64.qcow2" />
           </excludedPaths>
         </serverdata>
       </paths>
