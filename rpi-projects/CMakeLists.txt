@@ -30,26 +30,26 @@ else()
 endif()
 
 # -----------------------------------------------------------------------------#
-# Kernel directories (cache variables)
+# Kernel directories (KDIR = running kernel build, KSRC = headers, prefer ~/rpi-linux)
 # -----------------------------------------------------------------------------#
 set(_HOME_RPI_LINUX "$ENV{HOME}/rpi-linux")
+execute_process(COMMAND uname -r
+        OUTPUT_VARIABLE KREL
+        OUTPUT_STRIP_TRAILING_WHITESPACE)
 
-# Define cache entries (may be empty initially)
-set(KDIR "" CACHE PATH "Kernel build directory (kbuild; includes include/generated/*)")
-set(KSRC "" CACHE PATH "Kernel *source* directory (includes include/uapi/*)")
+set(KDIR "/lib/modules/${KREL}/build" CACHE PATH "Kernel build directory (kbuild; includes include/generated/*)")
+set(KSRC "${_HOME_RPI_LINUX}" CACHE PATH "Kernel *source* directory (includes include/uapi/*)")
 
-# If neither provided, try ~/rpi-linux FIRST (only if prepared)
-if (NOT KDIR AND NOT KSRC AND EXISTS "${_HOME_RPI_LINUX}/include/generated/autoconf.h")
-    set(KDIR "${_HOME_RPI_LINUX}" CACHE PATH "" FORCE)
-    set(KSRC "${_HOME_RPI_LINUX}" CACHE PATH "" FORCE)
-endif()
-
-# Fallbacks
+# 1) KDIR: default to running kernel's build tree
 if (NOT KDIR)
     set(KDIR "/lib/modules/${KREL}/build" CACHE PATH "" FORCE)
 endif()
+
+# 2) KSRC: prefer ~/rpi-linux for headers, else KDIR/source, else KDIR
 if (NOT KSRC)
-    if (EXISTS "${KDIR}/source/include/linux")
+    if (EXISTS "${_HOME_RPI_LINUX}/include/uapi/linux/types.h")
+        set(KSRC "${_HOME_RPI_LINUX}" CACHE PATH "" FORCE)
+    elseif (EXISTS "${KDIR}/source/include/uapi/linux/types.h")
         set(KSRC "${KDIR}/source" CACHE PATH "" FORCE)
     else()
         set(KSRC "${KDIR}" CACHE PATH "" FORCE)
@@ -70,28 +70,19 @@ if (NOT EXISTS "${KSRC}/include/uapi/linux/types.h")
     endforeach()
 endif()
 
-# Auto-switch: if current KDIR lacks autoconf.h but ~/rpi-linux is ready, FORCE-switch.
+# Sanity check against KDIR (real build tree)
 set(_autoconf "${KDIR}/include/generated/autoconf.h")
-if (NOT EXISTS "${_autoconf}" AND NOT (KDIR STREQUAL "${_HOME_RPI_LINUX}") AND
-        EXISTS "${_HOME_RPI_LINUX}/include/generated/autoconf.h")
-    message(STATUS "KDIR '${KDIR}' lacks include/generated/autoconf.h; switching to ${_HOME_RPI_LINUX}")
-    set(KDIR "${_HOME_RPI_LINUX}" CACHE PATH "" FORCE)
-    set(KSRC "${_HOME_RPI_LINUX}" CACHE PATH "" FORCE)
-    set(_autoconf "${KDIR}/include/generated/autoconf.h")
-endif()
-
-# Sanity (soften with IDE_ONLY)
 if (NOT EXISTS "${_autoconf}")
     if (IDE_ONLY)
         message(WARNING
                 "Missing ${_autoconf}. Proceeding due to IDE_ONLY=ON (indexing-only).\n"
-                "If using ~/rpi-linux, run:\n"
-                "  make -C $ENV{HOME}/rpi-linux olddefconfig && make -C $ENV{HOME}/rpi-linux prepare modules_prepare")
+                "If using a full kernel tree, run:\n"
+                "  make -C ${KDIR} olddefconfig && make -C ${KDIR} prepare modules_prepare")
     else()
         message(FATAL_ERROR
                 "Kernel headers at ${KDIR} look incomplete (missing include/generated/autoconf.h).\n"
-                "If using ~/rpi-linux, run:\n"
-                "  make -C $ENV{HOME}/rpi-linux olddefconfig && make -C $ENV{HOME}/rpi-linux prepare modules_prepare\n"
+                "If using a full kernel tree, run:\n"
+                "  make -C ${KDIR} olddefconfig && make -C ${KDIR} prepare modules_prepare\n"
                 "Current KDIR: ${KDIR}")
     endif()
 endif()
@@ -100,6 +91,9 @@ if (NOT EXISTS "${KDIR}/Module.symvers")
     message(WARNING
             "Module.symvers not found in ${KDIR}. modpost may warn or fail.")
 endif()
+
+message(STATUS "Using KDIR (build):   ${KDIR}")
+message(STATUS "Using KSRC (headers): ${KSRC}")
 
 # -----------------------------------------------------------------------------#
 # Kernel include directories (for IDE parsing too)

@@ -164,18 +164,31 @@ static int pcm5102a_probe(struct platform_device *pdev)
 }
 void pcm5102a_remove(struct platform_device *pdev)
 {
+    struct pcm5102a_dev *dev = platform_get_drvdata(pdev);
+    // wait to terminate all dma on that channel
+    dmaengine_terminate_sync(dev->tx_chan);
+    dma_free_coherent(&pdev->dev, dev->tx_buf_len, dev->tx_buf, dev->tx_dma_addr);
+    dma_release_channel(dev->tx_chan);
 
+    // stop i2s output
+    // disable tx output globally
+    writel(0, dev->base + ITER);
+    writel(0, dev->base + TER(STEREO_CHANNEL));
+    clk_disable_unprepare(dev->clk); // gated
 }
-static const struct platform_device_id pcm5102a_dt_ids[] = {
-    {.name = "tutorial,pcm5102a"},
+static const struct of_device_id pcm5102a_dt_ids[] = {
+    {.compatible = "tutorial,pcm5102a"},
     {}
 };
-MODULE_DEVICE_TABLE(pl, pcm5102a_dt_ids);
+MODULE_DEVICE_TABLE(of, pcm5102a_dt_ids);
 
 static struct platform_driver p_driver = {
     .probe = pcm5102a_probe,
     .remove = pcm5102a_remove,
-    .id_table = pcm5102a_dt_ids,
+    .driver = {
+        .name = "pcm5102a_i2s",
+        .of_match_table = pcm5102a_dt_ids,
+    },
 
 };
 module_platform_driver(p_driver);
