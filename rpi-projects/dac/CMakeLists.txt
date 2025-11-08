@@ -1,16 +1,13 @@
-project(adc)
+project(dac)
 # Register the modules you have in rpi-projects/ (add more as needed)
 cmake_minimum_required(VERSION 3.21)
 # Attach source files for THIS module here:
 # rpi-projects/adc/CMakeLists.txt
 
-kmod_target(mcp3008_spi
-        SOURCES mcp3008_spi.c
+kmod_target(pcm5102a_i2s
+        SOURCES pcm5102a_i2s.c
         # HEADERS mcp3008.h
         # EXTRA_CFLAGS "-Wall -Wextra -O2"
         # MODULE_PARAMS "debug=1 rate_hz=500000"
-)
-kmod_target(mcp3008_spi_async
-        SOURCES mcp3008_spi_async.c
 )
 

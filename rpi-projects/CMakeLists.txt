@@ -143,22 +143,6 @@ add_custom_target(headers
 )
 
 # -----------------------------------------------------------------------------#
-# Internal staging helper
-# -----------------------------------------------------------------------------#
-function(_kmod_stage SRC DEST_DIR)
-    file(MAKE_DIRECTORY "${DEST_DIR}")
-    get_filename_component(_base "${SRC}" NAME)
-    if (KMOD_COPY_SOURCES)
-        file(COPY "${SRC}" DESTINATION "${DEST_DIR}" FOLLOW_SYMLINK_CHAIN)
-    else()
-        if (EXISTS "${DEST_DIR}/${_base}")
-            file(REMOVE "${DEST_DIR}/${_base}")
-        endif()
-        file(CREATE_LINK "${SRC}" "${DEST_DIR}/${_base}" SYMBOLIC)
-    endif()
-endfunction()
-
-# -----------------------------------------------------------------------------#
 # Public API: kmod_target(NAME ... )
 # -----------------------------------------------------------------------------#
 function(kmod_target NAME)
@@ -175,20 +159,64 @@ function(kmod_target NAME)
 
     set(OBJS "")
     set(INCDIRS "")
+    set(STAGED_SRCS "")
+
+    # Stage sources (copy or symlink) and collect object names
     foreach(src ${KMOD_SOURCES})
         get_filename_component(SRC_ABS "${src}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
-        _kmod_stage("${SRC_ABS}" "${STAGE}")
         get_filename_component(BASE "${SRC_ABS}" NAME)
+        set(STAGED_SRC "${STAGE}/${BASE}")
+
+        if (KMOD_COPY_SOURCES)
+            add_custom_command(
+                    OUTPUT "${STAGED_SRC}"
+                    COMMAND ${CMAKE_COMMAND} -E make_directory "${STAGE}"
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${SRC_ABS}" "${STAGED_SRC}"
+                    DEPENDS "${SRC_ABS}"
+                    COMMENT "Staging source ${SRC_ABS} -> ${STAGED_SRC}"
+                    VERBATIM
+            )
+        else()
+            file(MAKE_DIRECTORY "${STAGE}")
+            if (EXISTS "${STAGED_SRC}")
+                file(REMOVE "${STAGED_SRC}")
+            endif()
+            file(CREATE_LINK "${SRC_ABS}" "${STAGED_SRC}" SYMBOLIC)
+        endif()
+
+        list(APPEND STAGED_SRCS "${STAGED_SRC}")
+
         string(REGEX REPLACE "\\.(c|S)$" ".o" OBJ "${BASE}")
         list(APPEND OBJS "${OBJ}")
         get_filename_component(SDIR "${SRC_ABS}" DIRECTORY)
         list(APPEND INCDIRS "${SDIR}")
     endforeach()
 
+    # Stage headers similarly (if copying)
     foreach(h ${KMOD_HEADERS})
         get_filename_component(H_ABS "${h}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
         if (EXISTS "${H_ABS}")
-            _kmod_stage("${H_ABS}" "${STAGE}")
+            get_filename_component(HBASE "${H_ABS}" NAME)
+            set(STAGED_HDR "${STAGE}/${HBASE}")
+
+            if (KMOD_COPY_SOURCES)
+                add_custom_command(
+                        OUTPUT "${STAGED_HDR}"
+                        COMMAND ${CMAKE_COMMAND} -E make_directory "${STAGE}"
+                        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${H_ABS}" "${STAGED_HDR}"
+                        DEPENDS "${H_ABS}"
+                        COMMENT "Staging header ${H_ABS} -> ${STAGED_HDR}"
+                        VERBATIM
+                )
+                list(APPEND STAGED_SRCS "${STAGED_HDR}")
+            else()
+                file(MAKE_DIRECTORY "${STAGE}")
+                if (EXISTS "${STAGED_HDR}")
+                    file(REMOVE "${STAGED_HDR}")
+                endif()
+                file(CREATE_LINK "${H_ABS}" "${STAGED_HDR}" SYMBOLIC)
+            endif()
+
             get_filename_component(HDIR "${H_ABS}" DIRECTORY)
             list(APPEND INCDIRS "${HDIR}")
         endif()
@@ -236,7 +264,7 @@ function(kmod_target NAME)
     add_custom_command(
             OUTPUT "${STAGE}/${NAME}.ko"
             COMMAND "${MAKE_CMD}" -C "${KDIR}" M=${STAGE} ${_vflag} modules
-            DEPENDS ${KMOD_SOURCES} ${KMOD_HEADERS} "${STAGE}/Makefile"
+            DEPENDS ${STAGED_SRCS} "${STAGE}/Makefile"
             WORKING_DIRECTORY "${STAGE}"
             VERBATIM
     )
@@ -297,3 +325,4 @@ endfunction()
 # Modules
 # -----------------------------------------------------------------------------#
 add_subdirectory(adc)
+add_subdirectory(dac)
