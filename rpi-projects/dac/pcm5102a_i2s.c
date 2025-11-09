@@ -20,11 +20,12 @@ struct pcm5102a_dev
     struct clk *clk;
     struct dma_chan *tx_chan;
     dma_addr_t tx_dma_addr;
-    void *tx_buf;
+    int16_t *tx_buf;
     size_t tx_buf_len;
     struct platform_device *pdev;
     unsigned period_idx; // which period wer are on
     struct dma_device *dma_dev;
+    struct dma_async_tx_descriptor *tx_desc;
 };
 
 static void fill_audio_buffer(int16_t *buf, size_t len)
@@ -53,54 +54,49 @@ static void pcm5102a_tx_callback(void *data)
     // tasklet - softirq context
     struct pcm5102a_dev *dev = data;
     unsigned max_period = dev->tx_buf_len / PERIOD_LEN;
-    size_t offset = dev->period_idx * PERIOD_LEN;
-    fill_audio_buffer(dev->tx_buf + offset, PERIOD_LEN);
+    size_t offset_bytes = dev->period_idx * PERIOD_LEN;
+    int16_t *buf = dev->tx_buf + (offset_bytes / sizeof(int16_t));
+    fill_audio_buffer(buf, PERIOD_LEN);
     dev->period_idx = (dev->period_idx + 1 ) % max_period;
     dev_info(&dev->pdev->dev, "DMA period %u\n", dev->period_idx);
 
 }
 static void pcm5102a_hw_init(struct pcm5102a_dev *dev)
 {
-    u32 reg;
-    /* Disable TX & component while we configure */
-
-    writel(0,  dev->base + CER); // disable component so its safe to configure others
-    writel(0, dev->base + ITER);  // disable TX globally
-    writel(0, dev->base + TER(STEREO_CHANNEL)); // disable TX channel 0
-    // clear overrun  - previous tx errors
-    readl(dev->base + TOR(STEREO_CHANNEL));
-
-    // set the audio resolution - 16 bit samples
-    writel(0x2, dev->base + TCR(STEREO_CHANNEL));
-    // set FIFO Threshold
-    writel(BURST_SIZE - 1, dev->base + TFCR(STEREO_CHANNEL));
-    writel(0x1, dev->base + ITER);
-    writel(1, dev->base + CER);
-    // Enable dma for the tx channel globably | channel 0
-    writel(DMAEN_TXBLOCK, dev->base + DMACR);
-    /*
-    // clear interrupt status
-    readl(dev->base + ISR(STEREO_CHANNEL));
-
-    // by default - channels 0 slots 1 and 2 are active for stereo
-
-    // Configure the DMA controller to service us because we can be a bus masterd
-    */
-    // enable I2ss transmitter tnow dma is ready
-    // enable tx globablly
-    writel(1, dev->base + ITER);
-    // enable ch 0 tx
-    writel(1, dev->base + TER(STEREO_CHANNEL));
-    writel(0x00, dev->base + CCR);
-
-
-
+    /* Configure the static registers */
+    /* 1. Disable Controller - master control */
+    writel(0,  dev->base + CER); // down(sem_m)
+    /* 2. Tx logic disabled globally */
+    writel(0, dev->base + ITER); // down(sem_tx)
+    /* 3. Tx logic disabled for channel 0 */
+    writel(0, dev->base + TER(STEREO_CHANNEL)); // down(sem_tx0)
+    /* 4. Set Transmit configuration for channel 0 */
+    writel(0x2, dev->base + TCR(0));  // 0x2 -> word length 16-bit for channel 0
+    /* 5.  Globally configure the i2s protocol */
+    writel(0, dev->base + CCR); // std i2s protocol, max 16-bit sample data */
+    /* 6. Set the TX FIFO threshold */
+    // writel(BURST_SIZE - 1, dev->base + TFCR(STEREO_CHANNEL)); // get more data from dma controller when  FIFO_LEN <= BURST_SIZE
+    writel(100, dev->base + TFCR(STEREO_CHANNEL)); // get more data from dma controller when  FIFO_LEN <= BURST_SIZE
+    /* 7. Enable events to go out to IRQ or DMA ctrl */
+    writel(0x1, dev->base + IER); // this would allow us to use the request line to dma when threshold meets
+    /* 8. Tell the block to use DMA for TX FIFO filling */
+    writel(DMAEN_TXBLOCK, dev->base + DMACR); // enable DMA for tx channel
+    /* 9. Clear underrun error flags */
+    readl(dev->base + TOR(STEREO_CHANNEL)); // clear underrun flags; maybe from previous run they were bad
+    /* 10. Enable the TX logic for channel 0 */
+    writel(0x1, dev->base + TER(STEREO_CHANNEL)); //  up(sem_tx0)
+    /* 11. Enable the TX logic globally */
+    writel(0x1, dev->base + ITER); // up(sem_tx)
+    /* 12. Enable the controller */
+    writel(0x1, dev->base + CER); // up(sem_m)
 
 }
 static int pcm5102a_probe(struct platform_device *pdev)
 {
     int ret = 0;
     struct resource *res;
+    struct dma_slave_config config;
+    dma_cookie_t cookie;
     struct pcm5102a_dev *dev = devm_kzalloc(&pdev->dev, sizeof(*dev), GFP_KERNEL); if (!dev) return -ENOMEM;
     platform_set_drvdata(pdev, dev);
     dev->pdev = pdev;
@@ -117,7 +113,7 @@ static int pcm5102a_probe(struct platform_device *pdev)
         return ret;
     }
 
-    pcm5102a_hw_init(dev);
+    // need the clock to be able to config
     dev->tx_chan = dma_request_chan(&pdev->dev, "tx"); // tx is just the name of the mapping to our request line in dt
     if (IS_ERR(dev->tx_chan)) return -ENODEV;
 
@@ -137,7 +133,7 @@ static int pcm5102a_probe(struct platform_device *pdev)
     fill_audio_buffer(dev->tx_buf, dev->tx_buf_len);
     // configure DMA Transfer properties
     // Destination is needed so it knows where to transfer to
-    struct dma_slave_config config = {0};
+    memset(&config, 0, sizeof(config));
     config.direction = DMA_MEM_TO_DEV; // from memory to device
     config.dst_addr_width = DMA_SLAVE_BUSWIDTH_2_BYTES; // 16-bit transfers
     config.dst_maxburst = BURST_SIZE; // transfer up to 4 samples per burst
@@ -145,9 +141,7 @@ static int pcm5102a_probe(struct platform_device *pdev)
     ret = dmaengine_slave_config(dev->tx_chan, &config);
     if (ret) goto error_free_buf;
     // prepare a cyclic dma descriptor
-
-    struct dma_async_tx_descriptor *tx_desc;
-    tx_desc = dmaengine_prep_dma_cyclic(
+    dev->tx_desc = dmaengine_prep_dma_cyclic(
         dev->tx_chan,
         dev->tx_dma_addr,
         dev->tx_buf_len,
@@ -155,45 +149,57 @@ static int pcm5102a_probe(struct platform_device *pdev)
         DMA_MEM_TO_DEV,
         DMA_PREP_INTERRUPT | DMA_CTRL_ACK
         );
-   if (!tx_desc)
+   if (!dev->tx_desc)
    {
        ret = -ENOMEM;
        dev_err(&pdev->dev, "failed to prepare dma descriptor\n");
        goto error_free_buf;
    }
-    tx_desc->callback = pcm5102a_tx_callback;
-    tx_desc->callback_param = dev;
+    dev->tx_desc->callback = pcm5102a_tx_callback;
+    dev->tx_desc->callback_param = dev;
     dev->period_idx = 0;
-    dma_cookie_t cookie = dmaengine_submit(tx_desc);
+    cookie = dmaengine_submit(dev->tx_desc);
    if (cookie < 0)
    {
        ret = -EIO;
        dev_err(&pdev->dev, "failed to submit dma descriptor\n");
        goto error_free_buf;
    }
+    pcm5102a_hw_init(dev);
     dma_async_issue_pending(dev->tx_chan); // tell dma ctrl to start
 
 
     return 0;
     error_free_buf:
-        dma_free_coherent(&pdev->dev, dev->tx_buf_len, dev->tx_buf, dev->tx_dma_addr);
+        dma_free_coherent(dev->dma_dev->dev, dev->tx_buf_len, dev->tx_buf, dev->tx_dma_addr);
     error_release_chan:
         dma_release_channel(dev->tx_chan);
+        clk_disable_unprepare(dev->clk);
     return ret;
 }
 void pcm5102a_remove(struct platform_device *pdev)
 {
     struct pcm5102a_dev *dev = platform_get_drvdata(pdev);
-    // wait to terminate all dma on that channel
+    u32 had_underrun;
     dmaengine_terminate_sync(dev->tx_chan);
-    dma_free_coherent(dev->dma_dev->dev, dev->tx_buf_len, dev->tx_buf, dev->tx_dma_addr);
     dma_release_channel(dev->tx_chan);
 
-    // stop i2s output
-    // disable tx output globally
-    writel(0, dev->base + ITER);
-    writel(0, dev->base + TER(STEREO_CHANNEL));
+    had_underrun = readl(dev->base + TOR(STEREO_CHANNEL));      // clear TX underrun flags
+    if (had_underrun != 0)
+    {
+        dev_err(&pdev->dev, "had TX underrun flags: %x\n", had_underrun);
+    }
+    writel(0, dev->base + IER);                    // disable events from going out
+    writel(0, dev->base + TER(STEREO_CHANNEL));   // disable TX channel 0
+    writel(0, dev->base + ITER);                  // disable global TX
+    writel(0, dev->base + DMACR);                 // disable DMA handshake
+    /* Disable the component */
+    writel(0, dev->base + CER);
+
+    dma_free_coherent(dev->dma_dev->dev, dev->tx_buf_len, dev->tx_buf, dev->tx_dma_addr);
+
     clk_disable_unprepare(dev->clk); // gated
+
 }
 static const struct of_device_id pcm5102a_dt_ids[] = {
     {.compatible = "tutorial,pcm5102a"},
