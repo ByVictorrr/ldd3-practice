@@ -83,6 +83,25 @@ static void pcm5102a_tx_callback(void *data)
     dev_info(&dev->pdev->dev, "DMA period %u\n", dev->period_idx);
 
 }
+static void pcm5102a_hw_init(struct pcm5102a_dev *dev)
+{
+    u32 reg;
+    // disable TX globally
+    writel(0, dev->base + ITER);
+    // clear overrun ?
+    readl(dev->base + TOR(STEREO_CHANNEL));
+
+    // set the audio resolution - 16 bit samples
+    writel(0x2, dev->base + TCR(STEREO_CHANNEL));
+    // set FIFO Threshold
+    writel(BURST_SIZE - 1, dev->base + TFCR(STEREO_CHANNEL));
+    writel(0x1, dev->base + ITER);
+    writel(1, dev->base + CER);
+    // Enable dma for the tx channel globably | channel 0
+    writel(DMAEN_TXBLOCK, dev->base + DMACR);
+
+
+}
 static int pcm5102a_probe(struct platform_device *pdev)
 {
     int ret = 0;
@@ -96,17 +115,8 @@ static int pcm5102a_probe(struct platform_device *pdev)
     dev->clk = devm_clk_get(&pdev->dev, NULL);
     if (IS_ERR(dev->clk)) return PTR_ERR(dev->clk);
     clk_prepare_enable(dev->clk);
-    // disable TX globably
-    writel(0, dev->base + ITER);
-    // clear interrupt status
-    readl(dev->base + ISR(STEREO_CHANNEL));
-    // set the audio resolution - 16 bit samples
-    writel(0x2, dev->base + TCR(STEREO_CHANNEL));
-    // by default - channels 0 slots 1 and 2 are active for stereo
-    // Enable dma for the tx channel globably | channel 0
-    // + channel 0, if BIT(8) is TXCH0
-    writel(DMAEN_TXBLOCK | BIT(8), dev->base + DMACR);
-    // Configure the DMA controller to service us because we can be a bus masterd
+    pcm5102a_hw_init(dev);
+
     dev->tx_chan = dma_request_chan(&pdev->dev, "tx"); // tx is just the name of the mapping to our request line in dt
     if (IS_ERR(dev->tx_chan)) return -ENODEV;
 
@@ -131,7 +141,6 @@ static int pcm5102a_probe(struct platform_device *pdev)
     config.dst_addr_width = DMA_SLAVE_BUSWIDTH_2_BYTES; // 16-bit transfers
     config.dst_maxburst = BURST_SIZE; // transfer up to 4 samples per burst
     config.dst_addr = res->start + 0x1C8; // I2S0_TX_FIFO we dont have a iommu to get there no iova is needed
-    config.device_fc = true;
     ret = dmaengine_slave_config(dev->tx_chan, &config);
     if (ret) goto error_free_buf;
     // prepare a cyclic dma descriptor
@@ -201,7 +210,7 @@ static struct platform_driver p_driver = {
     .driver = {
         .name = "pcm5102a_i2s",
         .of_match_table = pcm5102a_dt_ids,
-        .owner = THIS_MODULE,
+        .owner = THIS_MODULE
     },
 
 };
