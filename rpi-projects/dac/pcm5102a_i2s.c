@@ -4,33 +4,9 @@
 #include <linux/dmaengine.h>
 #include <linux/dma-mapping.h>
 #include <linux/device.h>
-/* Common registers (not per-channel) */
-#define IER      0x000   // I²S block interrupt enable
-#define IRER     0x004   // global RX enable
-#define ITER     0x008   // global TX enable
-#define CER      0x00C   // component enable
-#define CCR      0x010   // global config (word width, etc)
-#define DMACR       0x0200
-#define I2S_RXDMA           0x01C0
-#define I2S_RRXDMA          0x01C4
-#define I2S_TXDMA           0x01C8
-#define I2S_RTXDMA          0x01CC
+#include "pcm5102a_regs.h"
 
-/* Per-channel registers (x = channel index 0..3) */
-#define LRBR_LTHR(x) (0x40 * (x) + 0x020)  // left RX buf / TX threshold
-#define RRBR_RTHR(x) (0x40 * (x) + 0x024)  // right RX buf / TX threshold
-#define RER(x)       (0x40 * (x) + 0x028)  // RX Enable for channel x
-#define TER(x)       (0x40 * (x) + 0x02C)  // **TX Enable** for channel x
-#define RCR(x)       (0x40 * (x) + 0x030)  // RX Config for channel x
-#define TCR(x)       (0x40 * (x) + 0x034)  // **TX Config** for channel x
-#define ISR(x)       (0x40 * (x) + 0x038)  // Interrupt status (per chan)
-#define IMR(x)       (0x40 * (x) + 0x03C)  // Interrupt mask (per chan)
-#define ROR(x)       (0x40 * (x) + 0x040)  // RX overrun
-#define TOR(x)       (0x40 * (x) + 0x044)  // TX overrun
-#define RFCR(x)      (0x40 * (x) + 0x048)  // RX FIFO control
-#define TFCR(x)      (0x40 * (x) + 0x04C)  // TX FIFO control
-
-#define DMAEN_RXBLOCK BIT(16) //
+#define DMAEN_RXBLOCK BIT(16)
 #define DMAEN_TXBLOCK BIT(17)
 
 #define STEREO_CHANNEL 0
@@ -53,9 +29,9 @@ struct pcm5102a_dev
 
 static void fill_audio_buffer(int16_t *buf, size_t len)
 {
-    int samples = len / sizeof(int16_t)/2;
+    int frames = len / (sizeof(int16_t)*2);
     uint16_t amplitude = 0x7FFF;
-    for (int i = 0; i < samples; i++)
+    for (int i = 0; i < frames; i++)
     {
         // if n goes over the samples_per_cycle need to correct
         int phase = i % SAMPLES_PER_CYCLE;
@@ -86,9 +62,12 @@ static void pcm5102a_tx_callback(void *data)
 static void pcm5102a_hw_init(struct pcm5102a_dev *dev)
 {
     u32 reg;
-    // disable TX globally
-    writel(0, dev->base + ITER);
-    // clear overrun ?
+    /* Disable TX & component while we configure */
+
+    writel(0,  dev->base + CER); // disable component so its safe to configure others
+    writel(0, dev->base + ITER);  // disable TX globally
+    writel(0, dev->base + TER(STEREO_CHANNEL)); // disable TX channel 0
+    // clear overrun  - previous tx errors
     readl(dev->base + TOR(STEREO_CHANNEL));
 
     // set the audio resolution - 16 bit samples
@@ -99,6 +78,22 @@ static void pcm5102a_hw_init(struct pcm5102a_dev *dev)
     writel(1, dev->base + CER);
     // Enable dma for the tx channel globably | channel 0
     writel(DMAEN_TXBLOCK, dev->base + DMACR);
+    /*
+    // clear interrupt status
+    readl(dev->base + ISR(STEREO_CHANNEL));
+
+    // by default - channels 0 slots 1 and 2 are active for stereo
+
+    // Configure the DMA controller to service us because we can be a bus masterd
+    */
+    // enable I2ss transmitter tnow dma is ready
+    // enable tx globablly
+    writel(1, dev->base + ITER);
+    // enable ch 0 tx
+    writel(1, dev->base + TER(STEREO_CHANNEL));
+    writel(0x00, dev->base + CCR);
+
+
 
 
 }
@@ -115,8 +110,14 @@ static int pcm5102a_probe(struct platform_device *pdev)
     dev->clk = devm_clk_get(&pdev->dev, NULL);
     if (IS_ERR(dev->clk)) return PTR_ERR(dev->clk);
     clk_prepare_enable(dev->clk);
-    pcm5102a_hw_init(dev);
+    ret = clk_set_rate(dev->clk, 48000 * 16 * 2);  // 48k * 16-bit * 2ch = 1.536 MHz
+    if (ret)
+    {
+        dev_err(&dev->pdev->dev, "Failed to set I2S bitclock: %d\n", ret);
+        return ret;
+    }
 
+    pcm5102a_hw_init(dev);
     dev->tx_chan = dma_request_chan(&pdev->dev, "tx"); // tx is just the name of the mapping to our request line in dt
     if (IS_ERR(dev->tx_chan)) return -ENODEV;
 
@@ -140,7 +141,7 @@ static int pcm5102a_probe(struct platform_device *pdev)
     config.direction = DMA_MEM_TO_DEV; // from memory to device
     config.dst_addr_width = DMA_SLAVE_BUSWIDTH_2_BYTES; // 16-bit transfers
     config.dst_maxburst = BURST_SIZE; // transfer up to 4 samples per burst
-    config.dst_addr = res->start + 0x1C8; // I2S0_TX_FIFO we dont have a iommu to get there no iova is needed
+    config.dst_addr = res->start + I2S_TXDMA; // I2S0_TX_FIFO we dont have a iommu to get there no iova is needed
     ret = dmaengine_slave_config(dev->tx_chan, &config);
     if (ret) goto error_free_buf;
     // prepare a cyclic dma descriptor
@@ -172,11 +173,7 @@ static int pcm5102a_probe(struct platform_device *pdev)
    }
     dma_async_issue_pending(dev->tx_chan); // tell dma ctrl to start
 
-    // enable I2ss transmitter tnow dma is ready
-    // enable tx globablly
-    writel(1, dev->base + ITER);
-    // enable ch 0 tx
-    writel(1, dev->base + TER(STEREO_CHANNEL));
+
     return 0;
     error_free_buf:
         dma_free_coherent(&pdev->dev, dev->tx_buf_len, dev->tx_buf, dev->tx_dma_addr);

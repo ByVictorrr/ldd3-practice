@@ -6,7 +6,7 @@ cmake_minimum_required(VERSION 3.21)
 
 kmod_target(pcm5102a_i2s
         SOURCES pcm5102a_i2s.c
-        # HEADERS mcp3008.h
+        HEADERS pcm5102a_regs.h
         # EXTRA_CFLAGS "-Wall -Wextra -O2"
         # MODULE_PARAMS "debug=1 rate_hz=500000"
 )
