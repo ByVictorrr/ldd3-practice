@@ -48,6 +48,7 @@ struct pcm5102a_dev
     size_t tx_buf_len;
     struct platform_device *pdev;
     unsigned period_idx; // which period wer are on
+    struct dma_device *dma_dev;
 };
 
 static void fill_audio_buffer(int16_t *buf, size_t len)
@@ -73,11 +74,13 @@ static void fill_audio_buffer(int16_t *buf, size_t len)
 }
 static void pcm5102a_tx_callback(void *data)
 {
+    // tasklet - softirq context
     struct pcm5102a_dev *dev = data;
     unsigned max_period = dev->tx_buf_len / PERIOD_LEN;
     size_t offset = dev->period_idx * PERIOD_LEN;
     fill_audio_buffer(dev->tx_buf + offset, PERIOD_LEN);
     dev->period_idx = (dev->period_idx + 1 ) % max_period;
+    dev_info(&dev->pdev->dev, "DMA period %u\n", dev->period_idx);
 
 }
 static int pcm5102a_probe(struct platform_device *pdev)
@@ -106,12 +109,17 @@ static int pcm5102a_probe(struct platform_device *pdev)
     // Configure the DMA controller to service us because we can be a bus masterd
     dev->tx_chan = dma_request_chan(&pdev->dev, "tx"); // tx is just the name of the mapping to our request line in dt
     if (IS_ERR(dev->tx_chan)) return -ENODEV;
+
     // Setup dma buffer
-    dev->tx_buf_len = 4096;
-    dev->tx_buf = dma_alloc_coherent(&pdev->dev, dev->tx_buf_len, &dev->tx_dma_addr, GFP_KERNEL);
+    dev->dma_dev = dev->tx_chan->device;
+    dev->tx_buf_len = 2048;
+    dev_info(&pdev->dev, "alloc dma buffer len=%zu\n", dev->tx_buf_len);
+    // need to use dma controller because iommu needs set page table for it
+    dev->tx_buf = dma_alloc_coherent(dev->dma_dev->dev, dev->tx_buf_len, &dev->tx_dma_addr, GFP_KERNEL);
     if (!dev->tx_buf)
     {
         ret=-ENOMEM;
+        dev_err(&pdev->dev, "failed to allocate dma buffer\n");
         goto error_release_chan;
     }
     // Generate the Audio waveform
@@ -119,9 +127,11 @@ static int pcm5102a_probe(struct platform_device *pdev)
     // configure DMA Transfer properties
     // Destination is needed so it knows where to transfer to
     struct dma_slave_config config = {0};
+    config.direction = DMA_MEM_TO_DEV; // from memory to device
     config.dst_addr_width = DMA_SLAVE_BUSWIDTH_2_BYTES; // 16-bit transfers
     config.dst_maxburst = BURST_SIZE; // transfer up to 4 samples per burst
     config.dst_addr = res->start + 0x1C8; // I2S0_TX_FIFO we dont have a iommu to get there no iova is needed
+    config.device_fc = true;
     ret = dmaengine_slave_config(dev->tx_chan, &config);
     if (ret) goto error_free_buf;
     // prepare a cyclic dma descriptor
@@ -132,20 +142,23 @@ static int pcm5102a_probe(struct platform_device *pdev)
         dev->tx_dma_addr,
         dev->tx_buf_len,
         PERIOD_LEN,
-        DMA_DEV_TO_MEM,
+        DMA_MEM_TO_DEV,
         DMA_PREP_INTERRUPT | DMA_CTRL_ACK
         );
    if (!tx_desc)
    {
        ret = -ENOMEM;
+       dev_err(&pdev->dev, "failed to prepare dma descriptor\n");
        goto error_free_buf;
    }
     tx_desc->callback = pcm5102a_tx_callback;
     tx_desc->callback_param = dev;
     dev->period_idx = 0;
-   if (dmaengine_submit(tx_desc))
+    dma_cookie_t cookie = dmaengine_submit(tx_desc);
+   if (cookie < 0)
    {
        ret = -EIO;
+       dev_err(&pdev->dev, "failed to submit dma descriptor\n");
        goto error_free_buf;
    }
     dma_async_issue_pending(dev->tx_chan); // tell dma ctrl to start
@@ -167,7 +180,7 @@ void pcm5102a_remove(struct platform_device *pdev)
     struct pcm5102a_dev *dev = platform_get_drvdata(pdev);
     // wait to terminate all dma on that channel
     dmaengine_terminate_sync(dev->tx_chan);
-    dma_free_coherent(&pdev->dev, dev->tx_buf_len, dev->tx_buf, dev->tx_dma_addr);
+    dma_free_coherent(dev->dma_dev->dev, dev->tx_buf_len, dev->tx_buf, dev->tx_dma_addr);
     dma_release_channel(dev->tx_chan);
 
     // stop i2s output
@@ -188,6 +201,7 @@ static struct platform_driver p_driver = {
     .driver = {
         .name = "pcm5102a_i2s",
         .of_match_table = pcm5102a_dt_ids,
+        .owner = THIS_MODULE,
     },
 
 };
