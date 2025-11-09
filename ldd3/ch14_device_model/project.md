@@ -1,8 +1,4 @@
-**Mon Nov 3, 2025 — America/Los_Angeles**
 
-awesome—let’s do an “end-of-chapter” capstone that makes the **Linux device model** real: you’ll register a **custom bus**, a **device** on that bus, a **driver** that matches & probes it, plus a **class** so udev makes `/dev` nodes and sysfs looks familiar. This directly exercises the chapter’s ideas: **kobjects, buses, devices, drivers, classes, sysfs, uevents, probe/remove, release()**. I’ll give you a drop-in skeleton you can build with a kernel tree or headers.
-
----
 
 # Capstone: “mintbus” — a tiny end-to-end Linux device-model stack
 
@@ -255,5 +251,3 @@ sudo rmmod mintbus_bus
 * **Binding lifecycle** → register driver, core matches against existing devices, calls `probe`; remove does the inverse, tearing down sysfs entries.
 
 ---
-
-If you want, I can wrap this into a single tarball/zip with the Makefile and module sources exactly as shown so you can `make` + `insmod` immediately.
