@@ -329,7 +329,10 @@ static int edu_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	/* Register char driver */
 	ret = misc_register(&miscdev);
 	if (ret)
-		goto err_free_dma; pci_set_drvdata(pdev, dev); dev_set_drvdata(miscdev.this_device, dev); dev->pdev = pdev;
+		goto err_free_dma;
+	pci_set_drvdata(pdev, dev);
+	dev_set_drvdata(miscdev.this_device, dev);
+	dev->pdev = pdev;
 	/* PM Runtime options */
 	pm_runtime_enable(&pdev->dev);  	// // enables runtime power managemnt for this device
 	pm_runtime_set_active(&pdev->dev);  // tells pm core that the dev is currently active
