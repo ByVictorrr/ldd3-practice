@@ -27,10 +27,10 @@ endif()
 # Idempotent: qemu.sh should return success if the guest is already up
 
 add_custom_target(qemu-up
-        COMMAND bash -lc "${QEMU_SH} >/tmp/qemu.log" || exit 0
+        # COMMAND bash -lc "${QEMU_SH} >/tmp/qemu.log" || exit 0
         # COMMAND bash -lc "tmux kill-session -t ldd3-qemu || true"
-        # COMMAND tmux new-session -d -s ldd3-qemu "/home/victord/git/ldd3-practice/toolchain/qemu.sh > /tmp/qemu.log 2>&1"
-        # COMMAND bash -lc "sleep 60"
+        COMMAND tmux new-session -d -s ldd3-qemu "/home/victord/git/ldd3-practice/toolchain/qemu.sh > /tmp/qemu.log 2>&1"
+        COMMAND bash -lc "sleep 3"
         VERBATIM
         COMMENT "Start QEMU in background (non-blocking)"
 )
