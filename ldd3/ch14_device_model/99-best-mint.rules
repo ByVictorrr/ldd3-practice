@@ -1,0 +1,8 @@
+# /etc/udev/rules.d/99-best-mint.rules
+# Env
+SUBSYSTEM=="mint", \
+  ACTION=="add", \
+  ENV{DEV_NAME}=="peppermint" \
+  RUN+="/usr/bin/espeak 'The best mind - Peppermint device was added'"
+
+

@@ -16,6 +16,7 @@ static void remove(struct mint_dev *dev)
 static struct mint_id mint_id_table[] = {
     {.name = "peppermint"},
     {.name = "spearmint"},
+    {.name = ""},
 };
 struct mint_driver mint_drv = {
     .name = "mint_driver",
@@ -29,4 +30,6 @@ static int __init mintdrv_init(void){ return mint_register_driver(&mint_drv); }
 static void __exit mintdrv_exit(void){ mint_unregister_driver(&mint_drv); }
 module_init(mintdrv_init);
 module_exit(mintdrv_exit);
+MODULE_DESCRIPTION("Mint bus sample driver");
+MODULE_AUTHOR("Victor Delaplaine");
 MODULE_LICENSE("GPL");
