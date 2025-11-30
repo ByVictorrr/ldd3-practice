@@ -72,6 +72,7 @@ static int minibus_uevent(const struct device *dev, struct kobj_uevent_env *env)
     // for KOBj_ADD its called in device_add
     struct mint_dev *mdev = to_mint_device(dev);
     add_uevent_var(env, "MODALIAS=mintbus:name=%s", mdev->id.name);
+    add_uevent_var(env, "SUBSYSTEM=mint_bus");
     add_uevent_var(env, "DEV_NAME=%s", dev_name(dev));
     // add_uevent_var(env, "SUBSYSTEM=mint");
     return 0;
@@ -131,7 +132,7 @@ static ssize_t add_device_store(const struct bus_type *bus,
                                 &mdev->device,  /* parent */
                                 0,              /* devt, or something meaningful */
                                 mdev,           /* drvdata */
-                                "%s", name);
+                                "mint_%s", name);
 
     return count;
 }
@@ -175,6 +176,8 @@ ATTRIBUTE_GROUPS(mintbus);
 
 
 
+
+
 struct bus_type mint_bus = {
     .name = "mint",
     .probe = mint_core_probe,
@@ -182,6 +185,10 @@ struct bus_type mint_bus = {
     .match = minibus_match,
     .uevent = minibus_uevent,
     .bus_groups = mintbus_groups,
+    /** Attributes for when device_add - devices/<dev>/<attr>  folder **/
+    // .dev_groups =
+    /** Attributes for when driver_add - drivers/<drv>/<attr> folder **/
+    // .drv_groups =
 };
 
 EXPORT_SYMBOL_GPL(mint_bus);
@@ -191,6 +198,7 @@ int mint_register_driver(struct mint_driver *drv)
     drv->driver.bus = &mint_bus;
     drv->driver.name = drv->name;
     drv->driver.owner = THIS_MODULE;
+    // drv->driver.dev_groups == drv->driver.groups # called after probe successful for the device
     /* Deprecated; use bus->{remove,probe}
     drv->driver.probe = mint_core_probe;
     drv->driver.remove = _mint_core_remove;

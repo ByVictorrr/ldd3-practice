@@ -69,8 +69,24 @@ struct file_operations mint_fops = {
     .open = simple_open,
     .owner = THIS_MODULE
 };
+
+static int dev_uevent(const struct device *dev, struct kobj_uevent_env *env)
+{
+    // Add class specific uevent env vars for device events
+    // called from device_uevent which is default ops for kset for subsystem
+    // for pci it would be the pci.ids
+    // for KOBj_ADD its called in device_add
+    struct mint_dev *mdev = to_mint_device(dev);
+    add_uevent_var(env, "SUBSYSTEM=mint_class");
+    add_uevent_var(env, "DEV_NAME=%s", dev_name(dev));
+    return 0;
+
+}
 static int __init mintclass_init(void){
     int ret = alloc_chrdev_region(&mint_devno, 0, 1, "mint");
+    // mint_class->class_groups =
+    // mint_class->dev_groups
+    mint_class->dev_uevent = dev_uevent;
     if (ret) return ret;
     cdev_init(&mint_cdev, &mint_fops);
     cdev_add(&mint_cdev, mint_devno, 1);
