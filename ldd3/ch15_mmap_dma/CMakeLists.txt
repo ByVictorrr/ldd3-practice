@@ -1,7 +1,8 @@
 cmake_minimum_required(VERSION 3.21)
 project(mmap_dma NONE)
-kmod_target(mmap
+kmod_target(pci_edu_ext
         SOURCES main.c
+        HEADERS edu_ioctl.h
         # DEPENDS_MODS mint_class
 )
 userprog_target(f_mmap

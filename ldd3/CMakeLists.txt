@@ -320,6 +320,7 @@ function(userprog_target NAME)
             "$<$<COMPILE_LANGUAGE:C>:-idirafter${KDIR}/arch/${KARCH}/include/generated>"
             "$<$<COMPILE_LANGUAGE:C>:-idirafter${KDIR}/arch/${KARCH}/include/uapi>"
             "$<$<COMPILE_LANGUAGE:C>:-idirafter${KDIR}/arch/${KARCH}/include/generated/uapi>"
+            "$<$<COMPILE_LANGUAGE:C>:-idirafter${KDIR}/arch/${KARCH}/include/generated/uapi>"
     )
 
     add_custom_target(${NAME}-push

@@ -13,6 +13,7 @@
 #include <linux/kfifo.h>
 #include <linux/pm.h>
 #include <linux/pm_runtime.h>
+#include "edu_ioctl.h"
 
 
 #define DRIVER_NAME "pci_edu"
@@ -62,16 +63,7 @@ module_param(interrupts_enabled, bool, 0);
 // 4KiB
 #define EDU_BAR0_DMA_BUFFER_REG 0x40000
 
-// COMMANDS
-#define EDU_DMA_CMD_START    (1u << 0)  /* 0x01: write 1 to start; poll bit 0 for completion */
-#define EDU_DMA_CMD_DIR      (1u << 1)  /* 0x02: 0 = RAM→EDU (host→device), 1 = EDU→RAM (device→host) */
-#define EDU_DMA_CMD_IRQ      (1u << 2)  /* 0x04: raise IRQ when done */
 
-/* Optional helpers for readability */
-#define EDU_DMA_DIR_RAM_TO_DEV   (0u)           /* clear DIR bit */
-#define EDU_DMA_DIR_DEV_TO_RAM   (EDU_DMA_CMD_DIR)
-#define EDU_DMA_CMD_BUILD(dir/*0/1*/, irq) \
-(EDU_DMA_CMD_START | ((dir)?EDU_DMA_CMD_DIR:0) | ((irq)?EDU_DMA_CMD_IRQ:0))
 
 struct edu_dev
 {
@@ -88,13 +80,13 @@ struct edu_dev
 	/* save dma buffer */
 	char save_state[DMA_BUF_SIZE];
 
+
 };
 
-static int edu_dma_transfers(struct edu_dev *ed, bool to_device, size_t size)
+static int edu_dma_transfers(struct edu_dev *ed, dma_addr_t dma_addr,  int dir, size_t size)
 {
 	int ret = 0;
 	u32 src, dst;
-	u8 dir;
 	if (size > DMA_BUF_SIZE) return -EINVAL;
 	// one transfer at a time
 	if (mutex_lock_interruptible(&ed->xfer_lock))
@@ -114,18 +106,25 @@ static int edu_dma_transfers(struct edu_dev *ed, bool to_device, size_t size)
 	spin_unlock_irq(&ed->isr_lock);
 
 	// mutex here is holding only
-	if (to_device)
+	if (dir == EDU_DMA_DIR_RAM_TO_DEV)
 	{
-		// RAM -> EDU (TX)
-		src = lower_32_bits(ed->dma_handle);
+		// RAM -> EDU (RX), from the userspace this is TX
+		src = lower_32_bits(dma_addr);
 		dst = EDU_BAR0_DMA_BUFFER_REG;
-		dir = 0;
+	}else if (dir == EDU_DMA_DIR_DEV_TO_RAM)
+	{
+		// EDU -> RAM (TX), from userspace this is RX
+		src = EDU_BAR0_DMA_BUFFER_REG;
+		dst = lower_32_bits(dma_addr);
 	}else
 	{
-		// EDU -> RAM (RX)
-		src = EDU_BAR0_DMA_BUFFER_REG;
-		dst = lower_32_bits(ed->dma_handle);
-		dir = 1;
+		// no third value
+		spin_lock_irq(&ed->isr_lock);
+		ed->in_flight = false;
+		spin_unlock_irq(&ed->isr_lock);
+		mutex_unlock(&ed->xfer_lock);
+		return -EINVAL;
+
 	}
 	iowrite32(dst, ed->bar0 + EDU_BAR0_DMA_DST_REG);
 	iowrite32(src, ed->bar0 + EDU_BAR0_DMA_SRC_REG);
@@ -171,7 +170,7 @@ static ssize_t edu_read(struct file *filp, char __user *buf, size_t count, loff_
 	// resume device & increment if sucessful
 	ret = pm_runtime_resume_and_get(&dev->pdev->dev);
 	if (ret < 0) return ret;
-	ret = edu_dma_transfers(dev, false, count);
+	ret = edu_dma_transfers(dev, dev->dma_handle, EDU_DMA_DIR_RAM_TO_DEV, count);
 	// mark last busy for work_delayed item that would run runtime_suspend
 	pm_runtime_mark_last_busy(&dev->pdev->dev);
 	pm_runtime_put_autosuspend(&dev->pdev->dev);
@@ -189,7 +188,7 @@ static ssize_t edu_write(struct file *filp, const char __user *buf, size_t count
 	// resume device & increment if sucessful
 	ret = pm_runtime_resume_and_get(&dev->pdev->dev);
 	if (ret <0) return ret;
-	ret = edu_dma_transfers(dev, true, count);
+	ret = edu_dma_transfers(dev, dev->dma_handle, EDU_DMA_DIR_DEV_TO_RAM, count);
 	// mark last busy for work_delayed item that would run runtime_suspend
 	pm_runtime_mark_last_busy(&dev->pdev->dev);
 	pm_runtime_put_autosuspend(&dev->pdev->dev);
@@ -205,6 +204,172 @@ static int edu_open(struct inode *inode, struct file *filp)
 
 	return 0;
 }
+static int edu_mmap(struct file *filp, struct vm_area_struct *vma)
+{
+	/* You want to map the physical pages backing dev->dma_buf into userspace.
+		That means:
+			Get PFN(s) from dev->dma_handle (it’s a DMA/bus address).
+			Use remap_pfn_range().
+	 */
+	struct edu_dev *dev = filp->private_data;
+	unsigned long pfn;
+	int flags = VM_IO | VM_DONTEXPAND | VM_DONTDUMP | VM_DONTCOPY;
+	if (vma->vm_pgoff == 0)
+	{
+		// map coherenet buffer
+		struct page *page = virt_to_page(dev->dma_buf);
+		pfn = page_to_pfn(page);
+
+	} else if (vma->vm_pgoff == 1)
+	{
+		// map edu on-device dma register
+		resource_size_t phys = pci_resource_start(dev->pdev, 0) + EDU_BAR0_DMA_BUFFER_REG;
+		pfn = (unsigned long)phys >> PAGE_SHIFT;
+		flags |= VM_PFNMAP;
+
+	}else
+	{
+		return -EINVAL;
+	}
+
+	// Note: we are creating new pte's in side the users pgd to map to our physical page
+	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
+	// this is io mem region that cant be remmap, not included in coredump, and not copied when forked
+	vm_flags_set(vma, flags);
+	return remap_pfn_range(vma, vma->vm_start, pfn, DMA_BUF_SIZE, vma->vm_page_prot);
+}
+static long do_sg_dma(struct edu_dev * dev, struct edu_stream_desc *sg_desc)
+{
+	int ret = 0;
+	unsigned long start = sg_desc->user_addr;
+	unsigned long first_page = start & PAGE_MASK;
+	unsigned long offset = start & ~PAGE_MASK;
+	unsigned long last_page = (start + sg_desc->length - 1) & PAGE_MASK;
+	// PAGE SHIFT ELIMIATES OFFSET BYTES
+	unsigned long nr_pages = ((last_page - first_page) >> PAGE_SHIFT) + 1;
+	enum dma_data_direction dma_dir;
+	dma_dir = (sg_desc->dir == EDU_DMA_DIR_RAM_TO_DEV)
+				? DMA_TO_DEVICE : DMA_FROM_DEVICE;
+	struct page **pages = kmalloc_array(nr_pages, sizeof(struct page *), GFP_KERNEL);
+
+	if (!pages) return -ENOMEM;
+	// mapping into kernel space - create pte with writable, also it will be pinned for a while avoid mm
+	long pinned = pin_user_pages(first_page, nr_pages, FOLL_WRITE, pages);
+	if (pinned < 0 )
+	{
+		ret = pinned;
+		goto err_free_pages;
+	}
+	if (pinned < nr_pages)
+	{
+		ret = -ENOMEM;
+		goto err_unpin;
+	}
+	// now pages[0..pinned-1] are pinned
+	struct scatterlist *sg = kmalloc_array(pinned, sizeof(struct scatterlist), GFP_KERNEL);
+	if (!sg)
+	{
+		ret = -ENOMEM;
+		goto err_unpin;
+	}
+	sg_init_table(sg, pinned);
+	int i;
+	size_t remaining = sg_desc->length;
+	for (i = 0; i < pinned && remaining; i++)
+	{
+		size_t len = min_t(size_t, PAGE_SIZE - offset, remaining);
+		sg_set_page(sg + i, pages[i], len, offset);
+		offset = 0;
+		remaining-= len;
+	}
+	int mnts = i;
+	mnts = dma_map_sg(&dev->pdev->dev, sg, mnts, dma_dir);
+	// mnts no necessarily equal to pin scatterlist merges continuious pages
+	if (mnts <= 0)
+	{
+		ret = -ENOMEM;
+		goto err_free_sg;
+	}
+	// dma fields are filled of sg
+	struct scatterlist *s;
+	for_each_sg(sg, s, mnts, i)
+	{
+		dma_addr_t dma_addr = sg_dma_address(s);
+		long len = sg_dma_len(s);
+		/*
+		 * Usually here we would set the descriptor ring in mmio - hw_desc
+		 *  hw_desc[i].addr = dma_addr
+		 *  hw_desc[i].length = len
+		 *  Then after all have been set ring the bell
+		 */
+		ret = edu_dma_transfers(dev, dma_addr, sg_desc->dir, len);
+		if (ret) break;
+
+	}
+	dma_unmap_sg(&dev->pdev->dev, sg, mnts, dma_dir);
+	kfree(sg);
+	unpin_user_pages(pages, pinned);
+	kfree(pages);
+	return ret;
+	err_free_sg:
+		kfree(sg);
+	err_unpin:
+		unpin_user_pages(pages, pinned);
+	err_free_pages:
+		kfree(pages);
+	return ret;
+
+
+}
+static long edu_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+{
+	/* Create ioctl so the user can:
+	 * 1. trigger a TX DMA
+	 * 2. trigger a RX DMA
+	 */
+	struct edu_dev *dev = filp->private_data;
+	long ret;
+	int len;
+	struct edu_stream_desc desc;
+
+	ret = pm_runtime_resume_and_get(&dev->pdev->dev);
+	if (ret < 0) return ret;
+	switch (cmd)
+	{
+		case EDU_IOC_STREAM_DMA:
+			if (copy_from_user(&desc, (unsigned __user *)arg, sizeof(desc)))
+			{
+				ret = -EFAULT;
+				break;
+			}
+			ret = do_sg_dma(dev, &desc);
+			break;
+
+		case EDU_IOC_DMA_TX:
+			// read from ram for the device
+			if (copy_from_user(&len, (unsigned __user *)arg, sizeof(len)))
+			{
+				ret = -EFAULT;
+				break;
+			}
+			ret = edu_dma_transfers(dev, dev->dma_handle, EDU_DMA_DIR_RAM_TO_DEV, len);
+			break;
+		case EDU_IOC_DMA_RX:
+			if (copy_from_user(&len, (unsigned __user *)arg, sizeof(len)))
+			{
+				ret = -EFAULT;
+				break;
+			}
+			ret = edu_dma_transfers(dev, dev->dma_handle, EDU_DMA_DIR_DEV_TO_RAM, len);
+			break;
+
+		default:
+			ret = -EINVAL;
+	}
+	pm_runtime_mark_last_busy(&dev->pdev->dev);
+	pm_runtime_put_autosuspend(&dev->pdev->dev);
+	return ret;
+}
 
 static const struct file_operations uac_fops = {
 	.owner  = THIS_MODULE,
@@ -212,6 +377,8 @@ static const struct file_operations uac_fops = {
 	.read   = edu_read,
 	.write  = edu_write,
 	.llseek = noop_llseek,
+	.mmap   = edu_mmap, // new
+	.unlocked_ioctl = edu_ioctl, // new
 };
 static struct miscdevice miscdev = {
 	.minor = MISC_DYNAMIC_MINOR,
