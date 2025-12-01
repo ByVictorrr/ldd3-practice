@@ -83,10 +83,14 @@ static vm_fault_t no_page_fault(struct vm_fault *vmf)
         retval = VM_FAULT_SIGBUS;
         goto out;
     }
-    struct page *pg = vmalloc_to_page(page_ptr);
-    if (!pg) goto out;
+    /* Note to install via vm_insert_page the pte's we need VM_IO | VM_PFN */
+    // Right now the mm does the pte creation
+    struct page * pg= vmalloc_to_page(page_ptr);
+    get_page(pg);
+    vmf->page = pg;
     up(&dev->sem);
-    return vmf_insert_page(vma, vmf->address, pg);
+    // install the pte for the user
+    return 0;
     out:
     up(&dev->sem);
     return retval;
@@ -102,6 +106,7 @@ static int scullv_mmap(struct file *filp, struct vm_area_struct *vma)
 {
     vma->vm_ops = &scull_vm_ops;
     vma->vm_private_data = filp->private_data;
+    // we own the pte and will install it
     vma->vm_ops->open(vma);
     return 0;
 }

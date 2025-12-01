@@ -10,7 +10,6 @@
 #include <string.h>
 #include <errno.h>
 #include <signal.h>
-#include <sys/wait.h>
 
 static const char *dev_path = "/dev/scullv0";
 
