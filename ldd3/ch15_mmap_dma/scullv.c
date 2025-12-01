@@ -7,6 +7,7 @@
 #include <linux/fs.h>
 #include <linux/uaccess.h>
 #include <linux/container_of.h>
+#include <linux/mm.h>
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
 #include "scull.h"
@@ -16,6 +17,7 @@
 
 int scull_major = SCULL_MAJOR;
 int scull_minor = SCULL_MINOR;
+
 int scull_nr_devs = SCULL_NR_DEVS;
 int scull_qset = SCULL_QSET;
 int scull_quantum = SCULL_QUANTUM;
@@ -26,9 +28,9 @@ MODULE_DESCRIPTION("Scullv");
 MODULE_VERSION("0.2");
 module_param(scull_major, int, 0444);
 MODULE_PARM_DESC(scull_major, "Major number");
+
 module_param(scull_minor, int, 0444);
 MODULE_PARM_DESC(scull_minor, "Minor number");
-
 module_param(scull_nr_devs, int, 0444);
 MODULE_PARM_DESC(scull_nr_devs, "Number of SCULL Devices");
 
@@ -38,8 +40,71 @@ MODULE_PARM_DESC(scull_qset, "How large should the qset be?");
 module_param(scull_quantum, int, 0444);
 MODULE_PARM_DESC(scull_quantum, "How large should the quantum be?");
 
+static void scullv_vma_open(struct vm_area_struct *vma)
+{
+    // callback is explicit called when forked
+    struct scull_dev *dev = vma->vm_private_data;
+    dev->vmas++;
+}
+static void scullv_vma_close(struct vm_area_struct *vma)
+{
+    struct scull_dev *dev = vma->vm_private_data;
+    dev->vmas--;
+}
 
+static vm_fault_t no_page_fault(struct vm_fault *vmf)
+{
+    struct vm_area_struct *vma = vmf->vma;
+    struct scull_dev *dev = vma->vm_private_data;
+    struct scull_qset *ptr;
+    void *page_ptr = NULL;
+    vm_fault_t retval = VM_FAULT_NOPAGE;
+    /* Here the proces doesnt have the happen so fault happens*/
+    // step 1 - get the size, offset
+    unsigned offset = (vmf->address - vma->vm_start) + (vma->vm_pgoff << PAGE_SHIFT);
+    down(&dev->sem); // synchronize with write/read/trim
+    // total number of bytes in dev
+    if (offset >= dev->size)
+    {
+        retval = VM_FAULT_SIGBUS;
+        goto out;
+    }
+    // get the page number this offset is in
+    offset>>=PAGE_SHIFT;
+    for (ptr=dev->data; ptr && offset >= dev->qset; ptr=ptr->next)
+    {
+        /*Iterate till we find the qset matching the offset*/
+        offset -= dev->qset;
+    }
+    // here offset should be used to index a quantum in that qset
+    if (ptr && ptr->data[offset]) page_ptr = ptr->data[offset];
+    if (!page_ptr)
+    {
+        retval = VM_FAULT_SIGBUS;
+        goto out;
+    }
+    struct page *pg = vmalloc_to_page(page_ptr);
+    if (!pg) goto out;
+    up(&dev->sem);
+    return vmf_insert_page(vma, vmf->address, pg);
+    out:
+    up(&dev->sem);
+    return retval;
+}
 
+struct vm_operations_struct scull_vm_ops = {
+    .open = scullv_vma_open,
+    .close = scullv_vma_close,
+    .fault = no_page_fault,
+};
+
+static int scullv_mmap(struct file *filp, struct vm_area_struct *vma)
+{
+    vma->vm_ops = &scull_vm_ops;
+    vma->vm_private_data = filp->private_data;
+    vma->vm_ops->open(vma);
+    return 0;
+}
 
 static void * scullv_alloc_quantum(unsigned int order)
 {
@@ -59,6 +124,8 @@ int scull_dev_reset(struct scull_dev *dev)
 {
     struct scull_qset *next, *curr;
     int i;
+    if (dev->vmas) /* dont trim: active mapping*/
+        return -EBUSY;
     /* Loop around all qsets */
     for (curr=dev->data; curr; curr=next)
     {
@@ -377,12 +444,13 @@ const struct file_operations scull_fops ={
     .read = scull_read,
     .write = scull_write,
     .unlocked_ioctl = scull_ioctl,
+    .mmap=scullv_mmap,
     .llseek = scull_llseek,
 };
 
 
-struct class * cls;
-struct scull_dev *scull_devices;
+static struct class * cls;
+static struct scull_dev *scull_devices;
 static void scull_setup_cdev(struct scull_dev *dev, int index)
 {
 	int err;
@@ -469,6 +537,5 @@ static int __init short_init(void) {
 static void __exit short_exit(void) {
 	_scull_cleanup_module();
 }
-
 module_init(short_init)
 module_exit(short_exit)

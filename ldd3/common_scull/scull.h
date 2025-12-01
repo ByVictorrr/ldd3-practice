@@ -34,6 +34,8 @@ struct scull_dev{
     unsigned int access_key;
     struct semaphore sem;
     struct cdev cdev;
+    /* Added for ch15 - scullv*/
+    int vmas;
 
 
 };

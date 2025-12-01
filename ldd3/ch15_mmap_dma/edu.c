@@ -24,7 +24,7 @@ module_param(ms_wait_for_dma, int, 0);
 static bool interrupts_enabled = true;
 module_param(interrupts_enabled, bool, 0);
 
-#define DMA_BUF_SIZE	4096
+
 #define EDU_VENDOR     0x1234
 #define EDU_DEVICE     0x11e8
 
@@ -96,7 +96,7 @@ static int edu_dma_transfers(struct edu_dev *ed, dma_addr_t dma_addr,  int dir, 
 
 	if (ed->in_flight)
 	{
-		spin_unlock(&ed->isr_lock);
+		spin_unlock_irq(&ed->isr_lock);
 		mutex_unlock(&ed->xfer_lock);
 		return -EBUSY;
 
@@ -130,7 +130,8 @@ static int edu_dma_transfers(struct edu_dev *ed, dma_addr_t dma_addr,  int dir, 
 	iowrite32(src, ed->bar0 + EDU_BAR0_DMA_SRC_REG);
 	iowrite32(size, ed->bar0 + EDU_BAR0_DMA_COUNT_REG);
 	wmb(); // ensure above get written before the cmd
-	iowrite32(EDU_DMA_CMD_BUILD(dir, interrupts_enabled), ed->bar0 + EDU_BAR0_DMA_CMD_REG);
+	iowrite32(EDU_DMA_CMD_BUILD(dir, interrupts_enabled),
+		ed->bar0 + EDU_BAR0_DMA_CMD_REG);
 
 	if (!interrupts_enabled)
 	{
@@ -166,11 +167,15 @@ static ssize_t edu_read(struct file *filp, char __user *buf, size_t count, loff_
 	/* Basically waits until short_dev.head->ready ... rail if any are ready*/
 	int ret;
 	struct edu_dev *dev = filp->private_data;
-	count = min(count, DMA_BUF_SIZE);
+	size_t orig = count;
+	count = min(count, (size_t)DMA_BUF_SIZE);
+	pr_info("edu: read() requested=%zu clamped=%zu\n", orig, count);
 	// resume device & increment if sucessful
 	ret = pm_runtime_resume_and_get(&dev->pdev->dev);
 	if (ret < 0) return ret;
-	ret = edu_dma_transfers(dev, dev->dma_handle, EDU_DMA_DIR_RAM_TO_DEV, count);
+	/* device -> RAM (RX) like the working version */
+	ret = edu_dma_transfers(dev, dev->dma_handle,
+						EDU_DMA_DIR_DEV_TO_RAM, count);
 	// mark last busy for work_delayed item that would run runtime_suspend
 	pm_runtime_mark_last_busy(&dev->pdev->dev);
 	pm_runtime_put_autosuspend(&dev->pdev->dev);
@@ -188,7 +193,7 @@ static ssize_t edu_write(struct file *filp, const char __user *buf, size_t count
 	// resume device & increment if sucessful
 	ret = pm_runtime_resume_and_get(&dev->pdev->dev);
 	if (ret <0) return ret;
-	ret = edu_dma_transfers(dev, dev->dma_handle, EDU_DMA_DIR_DEV_TO_RAM, count);
+	ret = edu_dma_transfers(dev, dev->dma_handle, EDU_DMA_DIR_RAM_TO_DEV, count);
 	// mark last busy for work_delayed item that would run runtime_suspend
 	pm_runtime_mark_last_busy(&dev->pdev->dev);
 	pm_runtime_put_autosuspend(&dev->pdev->dev);
@@ -213,58 +218,97 @@ static int edu_mmap(struct file *filp, struct vm_area_struct *vma)
 	 */
 	struct edu_dev *dev = filp->private_data;
 	unsigned long pfn;
-	int flags = VM_IO | VM_DONTEXPAND | VM_DONTDUMP | VM_DONTCOPY;
 	if (vma->vm_pgoff == 0)
 	{
-		// map coherenet buffer
-		struct page *page = virt_to_page(dev->dma_buf);
-		pfn = page_to_pfn(page);
+		/** map the coherent dma buffer into userspace*/
+		return dma_mmap_coherent(&dev->pdev->dev, vma,
+			dev->dma_buf, dev->dma_handle, DMA_BUF_SIZE);
+	}
 
-	} else if (vma->vm_pgoff == 1)
+
+	if (vma->vm_pgoff == 1)
 	{
 		// map edu on-device dma register
 		resource_size_t phys = pci_resource_start(dev->pdev, 0) + EDU_BAR0_DMA_BUFFER_REG;
 		pfn = (unsigned long)phys >> PAGE_SHIFT;
-		flags |= VM_PFNMAP;
 
-	}else
-	{
-		return -EINVAL;
+
+		// Note: we are creating new pte's in side the users pgd to map to our physical page
+		vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
+		// this is io mem region that cant be remmap, not included in coredump, and not copied when forked
+		vm_flags_set(vma, VM_IO | VM_DONTEXPAND | VM_DONTDUMP | VM_DONTCOPY| VM_PFNMAP);
+		return remap_pfn_range(vma, vma->vm_start, pfn, DMA_BUF_SIZE, vma->vm_page_prot);
 	}
 
-	// Note: we are creating new pte's in side the users pgd to map to our physical page
-	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
-	// this is io mem region that cant be remmap, not included in coredump, and not copied when forked
-	vm_flags_set(vma, flags);
-	return remap_pfn_range(vma, vma->vm_start, pfn, DMA_BUF_SIZE, vma->vm_page_prot);
+
+
+	return -EINVAL;
 }
 static long do_sg_dma(struct edu_dev * dev, struct edu_stream_desc *sg_desc)
 {
+	/*
+	 * do_sg_dma()
+	 *
+	 * NOTE: The EDU hardware only has a single 4KiB DMA buffer at
+	 * EDU_BAR0_DMA_BUFFER_REG. There is no device-side notion of a
+	 * "descriptor ring" or streaming FIFO.
+	 *
+	 * This function therefore only implements *host-side* scatter/gather:
+	 *
+	 *   - It pins user pages and builds a scatterlist.
+	 *   - It then issues one DMA per SG segment to/from the single
+	 *     4KiB device buffer.
+	 *
+	 * As a result:
+	 *   - It is meaningful for copying between an arbitrary user buffer
+	 *     and the EDU's 4KiB buffer.
+	 *   - It is NOT a full streaming SG engine; a TX followed by an RX
+	 *     using this API does not produce a 1:1 "loopback" of a larger
+	 *     buffer, because each DMA always targets the same device window.
+	 */
+
 	int ret = 0;
 	unsigned long start = sg_desc->user_addr;
 	unsigned long first_page = start & PAGE_MASK;
 	unsigned long offset = start & ~PAGE_MASK;
 	unsigned long last_page = (start + sg_desc->length - 1) & PAGE_MASK;
+	int i;
 	// PAGE SHIFT ELIMIATES OFFSET BYTES
 	unsigned long nr_pages = ((last_page - first_page) >> PAGE_SHIFT) + 1;
-	enum dma_data_direction dma_dir;
-	dma_dir = (sg_desc->dir == EDU_DMA_DIR_RAM_TO_DEV)
+	unsigned int gup_flags = 0;
+	enum dma_data_direction dma_dir = (sg_desc->dir == EDU_DMA_DIR_RAM_TO_DEV)
 				? DMA_TO_DEVICE : DMA_FROM_DEVICE;
 	struct page **pages = kmalloc_array(nr_pages, sizeof(struct page *), GFP_KERNEL);
+	if (dma_dir == DMA_FROM_DEVICE)
+		gup_flags |= FOLL_WRITE;
 
 	if (!pages) return -ENOMEM;
 	// mapping into kernel space - create pte with writable, also it will be pinned for a while avoid mm
-	long pinned = pin_user_pages(first_page, nr_pages, FOLL_WRITE, pages);
-	if (pinned < 0 )
+	// long pinned = pin_user_pages(first_page, nr_pages, FOLL_WRITE | FOLL_LONGTERM, pages);
+	// fast_path: note this will not work if user pages not paged in already
+	long pinned = pin_user_pages_fast(first_page, nr_pages, gup_flags , pages);
+	if (pinned == nr_pages)
+		goto have_pages;
+		//unpin what suceeded
+	if (pinned > 0)
+	{
+		for (i=0; i < pinned; i++)
+			unpin_user_page(pages[i]);
+
+	}
+	/* use the slow GUP with faulting*/
+	pinned = pin_user_pages(first_page, nr_pages, gup_flags, pages);
+	if (pinned < 0)
 	{
 		ret = pinned;
 		goto err_free_pages;
 	}
 	if (pinned < nr_pages)
 	{
-		ret = -ENOMEM;
+		ret = -EFAULT;
 		goto err_unpin;
 	}
+	have_pages:
 	// now pages[0..pinned-1] are pinned
 	struct scatterlist *sg = kmalloc_array(pinned, sizeof(struct scatterlist), GFP_KERNEL);
 	if (!sg)
@@ -273,7 +317,6 @@ static long do_sg_dma(struct edu_dev * dev, struct edu_stream_desc *sg_desc)
 		goto err_unpin;
 	}
 	sg_init_table(sg, pinned);
-	int i;
 	size_t remaining = sg_desc->length;
 	for (i = 0; i < pinned && remaining; i++)
 	{
@@ -282,6 +325,12 @@ static long do_sg_dma(struct edu_dev * dev, struct edu_stream_desc *sg_desc)
 		offset = 0;
 		remaining-= len;
 	}
+	if (remaining) {
+		pr_err("edu: do_sg_dma: remaining=%zu after SG build (BUG)\n", remaining);
+		ret = -EFAULT;
+		goto err_free_sg;
+	}
+
 	int mnts = i;
 	mnts = dma_map_sg(&dev->pdev->dev, sg, mnts, dma_dir);
 	// mnts no necessarily equal to pin scatterlist merges continuious pages
@@ -308,13 +357,16 @@ static long do_sg_dma(struct edu_dev * dev, struct edu_stream_desc *sg_desc)
 	}
 	dma_unmap_sg(&dev->pdev->dev, sg, mnts, dma_dir);
 	kfree(sg);
+	/* release page references */
 	unpin_user_pages(pages, pinned);
 	kfree(pages);
 	return ret;
 	err_free_sg:
 		kfree(sg);
 	err_unpin:
-		unpin_user_pages(pages, pinned);
+	/* Drop the page refs we got from get_user_pages() */
+		if (pinned > 0)
+			unpin_user_pages(pages, pinned);
 	err_free_pages:
 		kfree(pages);
 	return ret;
@@ -331,6 +383,9 @@ static long edu_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	long ret;
 	int len;
 	struct edu_stream_desc desc;
+	pr_info("edu: ioctl cmd=0x%x (_IOC_NR=%u, magic=%c)\n",
+		cmd, _IOC_NR(cmd), _IOC_TYPE(cmd));
+
 
 	ret = pm_runtime_resume_and_get(&dev->pdev->dev);
 	if (ret < 0) return ret;
@@ -361,10 +416,11 @@ static long edu_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 				break;
 			}
 			ret = edu_dma_transfers(dev, dev->dma_handle, EDU_DMA_DIR_DEV_TO_RAM, len);
+
 			break;
 
 		default:
-			ret = -EINVAL;
+			ret = -ENOTTY;
 	}
 	pm_runtime_mark_last_busy(&dev->pdev->dev);
 	pm_runtime_put_autosuspend(&dev->pdev->dev);
@@ -485,8 +541,11 @@ static int edu_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	ret = request_threaded_irq(pdev->irq, NULL, edu_irq_threaded, IRQF_ONESHOT, DRIVER_NAME, dev);
 	if (ret < 0) goto err_vectors;
 	/* DMA Transfer */
-	ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(28));
+	ret = dma_set_mask(&pdev->dev, DMA_BIT_MASK(32)); // using for scatter and gather
 	if (ret) goto err_irq;
+	ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
+	if (ret) goto err_irq;
+
 	dev->dma_buf = dma_alloc_coherent(&pdev->dev, DMA_BUF_SIZE, &dev->dma_handle, GFP_KERNEL);
 	if (!dev->dma_buf)
 	{
@@ -501,10 +560,11 @@ static int edu_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	dev_set_drvdata(miscdev.this_device, dev);
 	dev->pdev = pdev;
 	/* PM Runtime options */
-	pm_runtime_enable(&pdev->dev);  	// // enables runtime power managemnt for this device
-	pm_runtime_set_active(&pdev->dev);  // tells pm core that the dev is currently active
 	pm_runtime_set_autosuspend_delay(&pdev->dev, 5000); // wait for 5s auto delay
 	pm_runtime_use_autosuspend(&pdev->dev); // tell pm core to use autosuspend
+
+	pm_runtime_enable(&pdev->dev);  	// // enables runtime power managemnt for this device
+
 	pm_runtime_mark_last_busy(&pdev->dev); // reset timer; last used
 	pm_runtime_put_autosuspend(&pdev->dev); // decrement usage count
 

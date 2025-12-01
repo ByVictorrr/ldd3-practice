@@ -12,6 +12,7 @@ kgdb.use_kdb=0 kgdboc=ttyS1,115200 \
 nokaslr pcie_ports=native \
 dummy_hcd.is_high_speed=0 dummy_hcd.is_super_speed=0 dummy_hcd.num=1 \
 g_serial.enable=0"
+
 exec qemu-system-x86_64 -enable-kvm -cpu host -smp 2 -m 2G \
   -kernel "$BZ" \
   -nographic -monitor none \

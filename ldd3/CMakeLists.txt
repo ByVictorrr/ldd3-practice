@@ -283,7 +283,7 @@ endfunction()
 function(userprog_target NAME)
     set(options)
     set(oneValueArgs REMOTE_DIR REMOTE_NAME)
-    set(multiValueArgs SOURCES INCLUDES LIBS)
+    set(multiValueArgs SOURCES INCLUDES LIBS RUN_CMDS)
     cmake_parse_arguments(USR "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
     if (NOT USR_SOURCES)
@@ -332,14 +332,24 @@ function(userprog_target NAME)
             COMMENT "scp ${NAME} -> ${USR_REMOTE_DIR}/${USR_REMOTE_NAME} in guest"
     )
 
+    # Build remote command string
+    if (USR_RUN_CMDS)
+        # Join multiple RUN_CMDS into: "cmd1 && cmd2 && cmd3"
+        string(JOIN " && " _remote_cmd "${USR_RUN_CMDS}")
+    else()
+        # Default: just run the binary with optional ARGS
+        set(_remote_cmd "${USR_REMOTE_DIR}/${USR_REMOTE_NAME} $<IF:$<BOOL:${ARGS}>,${ARGS},>")
+    endif()
+
     add_custom_target(${NAME}-run
             DEPENDS ${NAME}-push
-            COMMAND ${SSH_BIN} ${SSH_ARGS} "${USR_REMOTE_DIR}/${USR_REMOTE_NAME} $<IF:$<BOOL:${ARGS}>,${ARGS},>"
+            COMMAND ${SSH_BIN} ${SSH_ARGS} "${_remote_cmd}"
             USES_TERMINAL
             VERBATIM
             COMMENT "run ${USR_REMOTE_NAME} inside guest"
     )
 endfunction()
+
 function(remote_scp_and_run NAME)
     set(options)
     set(oneValueArgs LOCAL_PATH REMOTE_PATH)
