@@ -1,10 +1,10 @@
-#ifdef _EDU_H_
+#ifndef _EDU_H_
 #define _EDU_H_
 
 #define DMA_BUF_SIZE	4096
 #define EDU_VENDOR     0x1234
 #define EDU_DEVICE     0x11e8
-
+#define DRIVER_NAME "pci_edu"
 
 struct edu_dev
 {
@@ -21,9 +21,23 @@ struct edu_dev
     /* save dma buffer */
     char save_state[DMA_BUF_SIZE];
 
+    /** Module params */
+    bool interrupts_enabled;
+    int ms_wait_for_dma;
+
 };
 
 
+
+extern struct pci_error_handlers edu_err_handlers;
+extern struct dev_pm_ops edu_pm_ops;
+extern struct miscdevice miscdev;
+int edu_dma_transfers(struct edu_dev *, dma_addr_t,  int, size_t);
+
+ssize_t edu_read(struct file *, char __user *, size_t , loff_t *);
+ssize_t edu_write(struct file *, const char __user *, size_t , loff_t *);
+int edu_probe(struct pci_dev *pdev, const struct pci_device_id *id);
+void edu_remove(struct pci_dev *pdev);
 /* ---BAR 0 register maps---- */
 
 // low MMIO
@@ -59,15 +73,20 @@ struct edu_dev
 // 4KiB
 #define EDU_BAR0_DMA_BUFFER_REG 0x40000
 
+
 // COMMANDS
 #define EDU_DMA_CMD_START    (1u << 0)  /* 0x01: write 1 to start; poll bit 0 for completion */
 #define EDU_DMA_CMD_DIR      (1u << 1)  /* 0x02: 0 = RAM→EDU (host→device), 1 = EDU→RAM (device→host) */
-#define EDU_DMA_CMD_IRQ      (1u << 2)  /* 0x04: raise IRQ when done */
+#define EDU_DMA_CMD_IRQ      (1u << 2)  /* 0x04: raise IRQinclude when done */
 
 /* Optional helpers for readability */
 #define EDU_DMA_DIR_RAM_TO_DEV   (0u)           /* clear DIR bit */
 #define EDU_DMA_DIR_DEV_TO_RAM   (EDU_DMA_CMD_DIR)
+
 #define EDU_DMA_CMD_BUILD(dir/*0/1*/, irq) \
-(EDU_DMA_CMD_START | ((dir)?EDU_DMA_CMD_DIR:0) | ((irq)?EDU_DMA_CMD_IRQ:0))
+(EDU_DMA_CMD_START | (dir) | ((irq)?EDU_DMA_CMD_IRQ:0))
+
+
+
 
 #endif
