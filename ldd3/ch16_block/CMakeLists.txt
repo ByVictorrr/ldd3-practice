@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.21)
 project(block NONE)
 
-kmod_target(block
-        SOURCES block.c
+kmod_target(rbull
+        SOURCES rbull.c
         # HEADERS edu_ioctl.h
         # DEPENDS_MODS mint_class
 )

@@ -315,6 +315,7 @@ int scull_pipe_init(dev_t first_dev)
         init_waitqueue_head(&p->inq);
         init_waitqueue_head(&p->outq);
         // creates /dev/scullp{i}
+
         struct device *d = device_create(pipe_cls, NULL, devno, NULL, "scullp%d", i);
 
         if (IS_ERR(d)) {
