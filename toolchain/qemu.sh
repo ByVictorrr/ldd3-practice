@@ -13,7 +13,7 @@ nokaslr pcie_ports=native \
 dummy_hcd.is_high_speed=0 dummy_hcd.is_super_speed=0 dummy_hcd.num=1 \
 g_serial.enable=0"
 
-exec qemu-system-x86_64 -enable-kvm -cpu host -smp 2 -m 2G \
+exec qemu-system-x86_64 -enable-kvm -cpu host -smp 4 -m 4G \
   -kernel "$BZ" \
   -nographic -monitor none \
   -drive file=$FS,if=virtio,format=qcow2,index=0 \
