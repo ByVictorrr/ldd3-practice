@@ -1,78 +1,19 @@
 #include <linux/init.h>
 #include <linux/etherdevice.h>
-#include <linux/netdev.h>
 #include <linux/netdevice.h>
 #include <linux/module.h>
 #include <linux/circ_buf.h>
 #include <linux/timer.h>
+#include "impair.h"
 
 static unsigned int q_vectors = 2;
 static unsigned int delay_msecs = 100;
-#define RING_SIZE 1024
-struct impair_desc
-{
-    u16 len;
-    u16 flags;
-    struct sk_buff *dkb; /* virtual: the "buffer" */
-};
-struct impair_ring
-{
-    struct impair_desc *desc;
-    u32 size;
-    u32 next_to_use;
-    u32 next_to_clean;
-    spinlock_t lock;
-};
-static inline u32 ring_next(u32 index) { return (index + 1) % RING_SIZE; }
-static inline u32 ring_free(const struct impair_ring *r) { return CIRC_SPACE(r->next_to_use, r->next_to_clean, r->size); }
-static inline u32 ring_used(const struct impair_ring *r){ return CIRC_CNT(r->next_to_use, r->next_to_clean, r->size); }
-static int ring_init(struct impair_ring *r, u32 size)
-{
-    r->size = size;
-    r->next_to_use = 0;
-    r->next_to_clean = 0;
-    spin_lock_init(&r->lock);
 
-    r->desc = kcalloc(size, sizeof(*r->desc), GFP_KERNEL);
-    return r->desc ? 0 : -ENOMEM;
-}
-
-static void ring_free_all(struct impair_ring *r)
-{
-    if (!r || !r->desc) return;
-    kfree(r->desc);
-    r->desc = NULL;
-}
-struct impair_priv;
-struct impair_q_vector
-{
-    /* napi <-> rx/tx <-> timer */
-    struct impair_ring rx_ring, tx_ring;
-    unsigned int q_index;
-    struct napi_struct napi;
-    /* act as our interrupt but it just is a timer*/
-    struct timer_list timer;
-
-    struct impair_priv *priv;
-
-};
-
-struct impair_priv{
-    struct net_device *dev;
-    struct bpf_prog *prog;
-    unsigned int num_q_vectors;
-    struct impair_q_vector *q_vect;
-
-    /* pointer to dev->dev_addr */
-    const unsigned char **dev_addr;
-    spinlock_t lock;
-    struct rtnl_link_stats64 stats64;
-};
 /* NAPI poll function */
 static int netty_poll(struct napi_struct *napi, int budget)
 {
     struct impair_q_vector *q_vec = container_of(napi, struct impair_q_vector, napi);
-    struct impair_private *priv = q_vec->priv;
+    struct impair_priv *priv = q_vec->priv;
     int work_done = 0;
 
     /* RX: pull packets from RX ring up to 'budget', call netif_receive_skb() */
@@ -262,6 +203,7 @@ void netty_setup(struct net_device *dev)
     eth_hw_addr_random(dev);
     priv->dev_addr = &dev->dev_addr;
     // dev->irq
+    priv->delay_msecs = delay_msecs;
 
     dev->netdev_ops = &netty_ops;
     dev->ethtool_ops = NULL;
