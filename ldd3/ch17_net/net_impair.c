@@ -3,6 +3,7 @@
 #include <linux/netdev.h>
 #include <linux/netdevice.h>
 #include <linux/module.h>
+#include <linux/circ_buf.h>
 #include <linux/timer.h>
 
 static unsigned int q_vectors = 2;
@@ -10,24 +11,43 @@ static unsigned int delay_msecs = 100;
 #define RING_SIZE 1024
 struct impair_desc
 {
-    __le16 cmd;
-    __le16 len;
-    __le16 flags;
-    __le32 *data;
+    u16 len;
+    u16 flags;
+    struct sk_buff *dkb; /* virtual: the "buffer" */
 };
 struct impair_ring
 {
-    unsigned char *buf[RING_SIZE];
-    struct impair_desc *desc[RING_SIZE];
-    unsigned int size;
-    unsigned int head, tail;
+    struct impair_desc *desc;
+    u32 size;
+    u32 next_to_use;
+    u32 next_to_clean;
+    spinlock_t lock;
 };
+static inline u32 ring_next(u32 index) { return (index + 1) % RING_SIZE; }
+static inline u32 ring_free(const struct impair_ring *r) { return CIRC_SPACE(r->next_to_use, r->next_to_clean, r->size); }
+static inline u32 ring_used(const struct impair_ring *r){ return CIRC_CNT(r->next_to_use, r->next_to_clean, r->size); }
+static int ring_init(struct impair_ring *r, u32 size)
+{
+    r->size = size;
+    r->next_to_use = 0;
+    r->next_to_clean = 0;
+    spin_lock_init(&r->lock);
 
+    r->desc = kcalloc(size, sizeof(*r->desc), GFP_KERNEL);
+    return r->desc ? 0 : -ENOMEM;
+}
+
+static void ring_free_all(struct impair_ring *r)
+{
+    if (!r || !r->desc) return;
+    kfree(r->desc);
+    r->desc = NULL;
+}
 struct impair_priv;
 struct impair_q_vector
 {
     /* napi <-> rx/tx <-> timer */
-    struct impair_ring *rx_ring, *tx_ring;
+    struct impair_ring rx_ring, tx_ring;
     unsigned int q_index;
     struct napi_struct napi;
     /* act as our interrupt but it just is a timer*/
@@ -36,6 +56,7 @@ struct impair_q_vector
     struct impair_priv *priv;
 
 };
+
 struct impair_priv{
     struct net_device *dev;
     struct bpf_prog *prog;
@@ -47,6 +68,96 @@ struct impair_priv{
     spinlock_t lock;
     struct rtnl_link_stats64 stats64;
 };
+/* NAPI poll function */
+static int netty_poll(struct napi_struct *napi, int budget)
+{
+    struct impair_q_vector *q_vec = container_of(napi, struct impair_q_vector, napi);
+    struct impair_private *priv = q_vec->priv;
+    int work_done = 0;
+
+    /* RX: pull packets from RX ring up to 'budget', call netif_receive_skb() */
+    /* TX: clean completed TX descriptors */
+
+    /* ... pretend we did no work ... */
+
+    if (work_done < budget) {
+        napi_complete_done(napi, work_done);
+        /* Re-enable interrupts now that we’re out of poll mode */
+        /* writel(INT_MASK_ALL, priv->ioaddr + IMASK); */
+    }
+
+    return work_done;
+}
+static void impl_timer_handler(struct timer_list *t)
+{
+    struct impair_q_vector *qv = container_of(t, struct impair_q_vector, timer);
+
+    /* "interrupt": schedule NAPI */
+    napi_schedule(&qv->napi);
+
+    /* re-arm */
+    mod_timer(&qv->timer, jiffies + msecs_to_jiffies(delay_msecs));
+
+}
+
+
+static int impair_alloc_q_vectors(struct impair_priv *priv, unsigned int num_qs)
+{
+    int ret = 0;
+    unsigned int i;
+    priv->num_q_vectors = num_qs;
+    priv->q_vect = kcalloc(num_qs, sizeof(*priv->q_vect), GFP_KERNEL);
+    if (!priv->q_vect) return -ENOMEM;
+    for (i=0; i<num_qs; i++)
+    {
+
+        struct impair_q_vector *qv = priv->q_vect + i;
+        qv->q_index = i;
+        qv->priv = priv;
+        memset(&qv->rx_ring, 0, sizeof(qv->rx_ring));
+        memset(&qv->tx_ring, 0, sizeof(qv->tx_ring));
+        /* susually activate rx/tx in hw */
+
+        int ret = ring_init(&qv->rx_ring, RING_SIZE);
+        if (ret)
+        {
+                // here unwind free
+                return ret;
+        }
+
+        ret = ring_init(&qv->tx_ring, RING_SIZE);
+        if (ret)
+        {
+            // here unwind free
+            return ret;
+        }
+        netif_napi_add(priv->dev, &qv->napi, netty_poll); // not sure
+        timer_setup(&qv->timer, impl_timer_handler, 0);
+        napi_enable(&qv->napi);
+        mod_timer(&qv->timer, jiffies + msecs_to_jiffies(delay_msecs)); // kind of like request_irq
+
+
+    }
+    return ret;
+
+}
+
+static void impair_free_q_vectors(struct impair_priv *priv)
+{
+
+    for (int i=0; i<priv->num_q_vectors; i++)
+    {
+        struct impair_q_vector *q = priv->q_vect + i;
+        timer_shutdown_sync(&q->timer); // kind of like free_irq
+        napi_disable(&q->napi);
+        netif_napi_del(&q->napi);
+        /* todo: what if napi is using skb; holding a ref to skb*/
+
+        ring_free_all(&q->rx_ring);
+        ring_free_all(&q->tx_ring);
+    }
+
+}
 static int netty_rx(struct sk_buff *skb, struct net_device *dev, struct packet_type *pt, struct net_device *orig_dev)
 {
     /* executes in napi poll */
@@ -77,20 +188,7 @@ static netdev_tx_t netty_tx(struct sk_buff *skb, struct net_device *dev)
 
 }
 
-static int init_ring(struct impair_ring *ring)
-{
-    ring->size = RING_SIZE;
-    for (unsigned int i = 0; i < RING_SIZE; i++)
-    {
 
-        ring->buf[i] = kmalloc(sizeof(unsigned char *), GFP_KERNEL);
-        ring->desc[i] = kmalloc(sizeof(struct impair_desc), GFP_KERNEL);
-        // todo: handle errors
-    }
-    ring->head = ring->tail = 0;
-    return 0;
-
-}
 static int netty_open(struct net_device *dev)
 {
     /** called when the interface is enabled
@@ -99,46 +197,24 @@ static int netty_open(struct net_device *dev)
     struct impair_priv *priv = netdev_priv(dev);
 
     /* susually activate rx/tx in hw */
-    for (unsigned int i = 0; i < priv->num_q_vectors; i++)
+    ret = impair_alloc_q_vectors(priv, q_vectors);
+    if (ret)
     {
-
-        struct impair_q_vector *q_vect = &priv->q_vect[i];
-        ret = init_ring(q_vect->rx_ring);
-        if (ret)
-        {
-            return ret;
-        };
-        ret = init_ring(q_vect->tx_ring);
-        if (ret) return ret;
-        napi_enable(&q_vect->napi);
-        mod_timer(&q_vect[i].timer, jiffies + msecs_to_jiffies(delay_msecs)); // kind of like request_irq
+        return ret;
     }
-
     // usually  enable napi
     // last step is to enable the carrier
     netif_carrier_on(dev);
 
     // netif_tx_start_all_queues(dev);
    return 0;
-    free_rx:
-        // kfree(priv->rx_ring);
-    free_tx:
-    return ret; // interface stays down
 }
 static int netty_close(struct net_device *dev)
 {
     struct impair_priv *priv = netdev_priv(dev);
     netif_carrier_off(dev);
     /* susually activate rx/tx in hw */
-    for (unsigned int i = 0; i < priv->num_q_vectors; i++)
-    {
-
-        struct impair_q_vector *q_vect = &priv->q_vect[i];
-        timer_shutdown_sync(&q_vect->timer); // kind of like free_irq
-        napi_disable(&q_vect->napi);
-
-    }
-
+    impair_free_q_vectors(priv);
     return 0; // clears IFF_Up flag
 }
 static int mtu_set(struct net_device *dev, int new_mtu)
@@ -166,61 +242,7 @@ static struct net_device_ops netty_ops = {
     .ndo_get_stats64 = netty_get_stats64,
 
 };
-/* NAPI poll function */
-static int netty_poll(struct napi_struct *napi, int budget)
-{
-    struct impair_q_vector *q_vec = container_of(napi, struct impair_q_vector, napi);
-    struct impair_private *priv = q_vec->priv;
-    int work_done = 0;
 
-    /* RX: pull packets from RX ring up to 'budget', call netif_receive_skb() */
-    /* TX: clean completed TX descriptors */
-
-    /* ... pretend we did no work ... */
-
-    if (work_done < budget) {
-        napi_complete_done(napi, work_done);
-        /* Re-enable interrupts now that we’re out of poll mode */
-        /* writel(INT_MASK_ALL, priv->ioaddr + IMASK); */
-    }
-
-    return work_done;
-}
-static void impl_timer_handler(struct timer_list *t)
-{
-    struct impair_q_vector *q = container_of(t, struct impair_q_vector, timer);
-    unsigned long j = jiffies;
-
-    q->timer.expires+= jiffies_to_msecs(100);
-    add_timer(&q->timer);
-
-}
-
-static int init_q_vectors(struct impair_priv *priv)
-{
-    int ret = 0;
-    /* Add NAPI (disabled until ndo_open enables it) */
-    for (unsigned int i = 0; i < priv->num_q_vectors; i++)
-    {
-        struct impair_q_vector *q_vect = priv->q_vect + i;
-        // use devm so dont need to roll back
-
-        q_vect[i].rx_ring = devm_kzalloc(&priv->dev->dev, sizeof(struct impair_ring), GFP_KERNEL);
-        q_vect[i].tx_ring = devm_kzalloc(&priv->dev->dev, sizeof(struct impair_ring), GFP_KERNEL);
-        if (!q_vect[i].rx_ring  || !q_vect[i].tx_ring) return -ENOMEM;
-        q_vect[i].q_index = i;
-
-        // per q setup
-        // start napi - or in the start context
-        netif_napi_add(priv->dev, &q_vect[i].napi, netty_poll);
-        timer_setup(&q_vect[i].timer, impl_timer_handler, 0);
-        q_vect[i].priv = priv;
-    }
-    // start the tx path
-    netif_tx_start_all_queues(priv->dev);
-    return ret;
-    
-}
 void netty_setup(struct net_device *dev)
 {
     struct impair_priv *priv = netdev_priv(dev);
@@ -258,18 +280,7 @@ static int __init net_impair_init(void){
     netty = alloc_netdev_mqs(sizeof(struct impair_priv), "netty", NET_NAME_UNKNOWN,
         netty_setup, q_vectors, q_vectors);
     struct impair_priv *priv = netdev_priv(netty);
-    priv->num_q_vectors = q_vectors;
-    priv->q_vect = kzalloc(sizeof(struct impair_q_vector) * q_vectors, GFP_KERNEL);
-    if (!priv->q_vect)
-    {
-        // todo
-    };
-    ret = init_q_vectors(priv);
-    if (ret)
-    {
-        goto free_netdev;
-    }
-    
+
     if (!netty) return -ENOMEM;
     ret = register_netdevice(netty);
     if (ret)
@@ -287,3 +298,5 @@ static int __init net_impair_init(void){
 }
 static void __exit net_impair_exit(void){
 }
+module_init(net_impair_init);
+module_exit(net_impair_exit);
