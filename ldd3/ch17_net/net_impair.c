@@ -20,10 +20,16 @@ struct impair_ring
     unsigned int size;
     unsigned int head, tail;
 };
+struct impair_q_vector
+{
+    struct impair_ring *rx_ring, *tx_ring;
+    unsigned int q_index;
+    struct napi_struct napi;
+};
 struct impair_priv{
     struct net_device *dev;
     struct bpf_prog *prog;
-    struct impair_ring *rx_ring, *tx_ring;
+    struct impair_q_vector *q_vect;
     /* act as our interrupt but it just is a timer*/
     struct timer_list timer;
     /* pointer to dev->dev_addr */
@@ -55,6 +61,11 @@ static int netty_open(struct net_device *dev)
      */
     int ret;
     struct impair_priv *priv = netdev_priv(dev);
+    for (unsigned int i = 0; i < num_rx; i++)
+    {
+
+    }
+
     priv->rx_ring = kzalloc(sizeof(struct impair_ring), GFP_KERNEL);
     if (!priv->rx_ring)
     {
