@@ -1,9 +1,8 @@
 cmake_minimum_required(VERSION 3.21)
-project(block NONE)
+project(net_impair NONE)
 
-kmod_target(
-        SOURCES rbull.c
+kmod_target(net_impair
+        SOURCES net_impair.c
         # HEADERS edu_ioctl.h
         # DEPENDS_MODS mint_class
 )
-set(REMOTE_BIN_DIR "/usr/local/bin")
