@@ -364,7 +364,7 @@ static int __init rbull_init(void){
 	dev->disk->private_data = dev;
 	snprintf(dev->disk->disk_name, sizeof(dev->disk->disk_name), "rbull%d", rbull_major);
 	memcpy(dev->disk->disk_name, "rbull0", sizeof("rbull0"));
-	set_capacity(dev->disk, dev->capacity_sectors);
+	set_capacity(dev->disk, dev->capacity_sectors); // this sets the size of the whole disk
 	ret = add_disk(dev->disk);
 	if (ret < 0)
 	{

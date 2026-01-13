@@ -10,41 +10,23 @@ struct impair_desc
 {
     u16 len;
     u16 flags;
-    struct sk_buff *dkb; /* virtual: the "buffer" */
+    void *data; /* just a sk_buff */
 };
 struct impair_ring
 {
-    struct impair_desc *desc;
+    struct impair_desc desc[RING_SIZE];
     u32 size;
     u32 next_to_use;
     u32 next_to_clean;
     spinlock_t lock;
 };
-static inline u32 ring_next(u32 index) { return (index + 1) % RING_SIZE; }
-static inline u32 ring_free(const struct impair_ring *r) { return CIRC_SPACE(r->next_to_use, r->next_to_clean, r->size); }
-static inline u32 ring_used(const struct impair_ring *r){ return CIRC_CNT(r->next_to_use, r->next_to_clean, r->size); }
-static int ring_init(struct impair_ring *r, u32 size)
-{
-    r->size = size;
-    r->next_to_use = 0;
-    r->next_to_clean = 0;
-    spin_lock_init(&r->lock);
 
-    r->desc = kcalloc(size, sizeof(*r->desc), GFP_KERNEL);
-    return r->desc ? 0 : -ENOMEM;
-}
-
-static void ring_free_all(struct impair_ring *r)
-{
-    if (!r || !r->desc) return;
-    kfree(r->desc);
-    r->desc = NULL;
-}
 struct impair_priv;
 struct impair_q_vector
 {
     /* napi <-> rx/tx <-> timer */
     struct impair_ring rx_ring, tx_ring;
+    struct sk_buff_head *rx_skb_queue;
     unsigned int q_index;
     struct napi_struct napi;
     /* act as our interrupt but it just is a timer*/
@@ -53,6 +35,28 @@ struct impair_q_vector
     struct impair_priv *priv;
 
 };
+
+struct rx_filter_state {
+    bool promisc;
+    bool allmulti;
+    uint8_t primary_mac[6];
+};
+static inline bool is_mcast(const uint8_t mac[6]) { return (mac[0] & 1) != 0; }
+static inline bool is_bcast(const uint8_t mac[6]) {
+    return mac[0]==0xff && mac[1]==0xff && mac[2]==0xff &&
+           mac[3]==0xff && mac[4]==0xff && mac[5]==0xff;
+}
+static inline bool mac_eq(const uint8_t a[6], const uint8_t b[6]) {
+    return memcmp(a,b,6)==0;
+}
+
+inline bool rx_accept(const struct rx_filter_state* f, const uint8_t dst[6]) {
+    if (f->promisc) return true;
+    if (is_bcast(dst)) return true;
+    if (is_mcast(dst)) return f->allmulti;
+    return mac_eq(dst, f->primary_mac);
+}
+
 
 struct impair_priv{
     struct net_device *dev;
@@ -65,7 +69,20 @@ struct impair_priv{
     spinlock_t lock;
     struct rtnl_link_stats64 stats64;
     unsigned int delay_msecs;
+    /* hw-virtual rx mac filters - state changes fill these*/
+    struct rx_filter_state rx_filter;
+
 };
 
+/* ring */
+u32 ring_next(u32 index);
+u32 ring_free(const struct impair_ring *r);
+u32 ring_used(const struct impair_ring *r);
+int ring_init(struct impair_ring *r, u32 size);
+void ring_free_all(struct impair_ring *r);
+
+/* q_vectors */
+int impair_alloc_q_vectors(struct impair_priv *priv, unsigned int num_qs);
+void impair_free_q_vectors(struct impair_priv *priv);
 
 #endif
