@@ -14,54 +14,35 @@ static netdev_tx_t impair_tx(struct sk_buff *skb, struct net_device *dev)
 {
     struct impair_priv *priv = netdev_priv(dev);
 
-    // (1) map this buffer to dma
-    // if (dev->features & NETIF_F_GSO)
     u16 q = skb_get_queue_mapping(skb); // given this num by ndo_select_queue
     struct impair_q_vector *qv = priv->q_vect + q;
     struct impair_ring *tx = &qv->tx_ring;
     struct netdev_queue *txq = netdev_get_tx_queue(dev, q);
     u32 idx;
 
-    /* TODO: check the linearlity of skb */
-    spin_lock(&tx->lock);
-    /* producer: enqueue into TX RING - check if we at least have one space open */
+    /* Producer: enqueue into TX ring. The consumer is in bh */
+    spin_lock_bh(&tx->lock);
     if (ring_free(tx) < 1)
     {
         // stop the transmit queue
-        netif_tx_stop_queue(txq); // tells the kernel that this has too many (dont call impair_tx)
-        spin_unlock(&tx->lock);
+        netif_tx_stop_queue(txq);
+        spin_unlock_bh(&tx->lock);
         return NETDEV_TX_BUSY;
     }
     idx = tx->next_to_use;
-    /* Fill descriptor (virutal) */
+    /* Fill virtual descriptor */
     tx->desc[idx].data = skb;
     tx->desc[idx].len = skb->len;
-    tx->desc[idx].flags = 0; // todo; add offloads; HW will later set done
-    /* advance tail (next_to_use) */
+    tx->desc[idx].flags = 0;
+
+    /* Make desc visible before advancing tail */
     tx->next_to_use = ring_next(idx);
-    spin_unlock(&tx->lock);
+    wmb();
 
-    /** TODO: need to scheule/kick hw*/
-    spin_lock(&qv->rx_ring.lock);
-    idx = ring_next(qv->rx_ring.next_to_use);
-    /* kind of pointless to have to two rings */
-    qv->rx_ring.desc[idx].data = skb;
-    spin_unlock(&qv->rx_ring.lock);
-
+    spin_unlock_bh(&tx->lock);
+    /** need to scheule/kick hw*/
+    mod_timer(&qv->timer, jiffies + 1);
     return NETDEV_TX_OK;
-
-
-
-    // (2) send it to the hardware - queue of hw tx ring
-
-
-    if (skb->len > 1500)
-    {
-
-    }
-
-
-
 }
 
 static void impair_tx_timeout(struct net_device *dev, unsigned int tx_q)

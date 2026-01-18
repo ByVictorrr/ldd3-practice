@@ -8,27 +8,50 @@ static int  impair_rx_drain(struct napi_struct *napi, struct impair_q_vector *qv
 {
     // (1) check if at least one desc is avail
     struct impair_ring *ring = &qv->rx_ring;
+    struct impair_priv *priv = qv->priv;
+    int work_done = 0;
     u32 *idx = &ring->next_to_clean;
     struct impair_desc *desc;
 
     if (ring_free(ring) < 1) return 0;
-    while (ring_free(ring) && budget--)
+    while (ring_free(ring) && work_done < budget)
     {
+        /* pseudo data we got from the "NIC" */
         desc = &ring->desc[*idx];
-        u64 *buffer  = desc->data;
+        struct sk_buff *skb = desc->data;
         u32 len = desc->len;
         u32 status = desc->flags;
-        struct sk_buff *skb = netdev_alloc_skb(qv->priv->dev, len);
-        qv->rx_skb_queue = skb->next;
+        // 1. usually check status for errors like crc, etc
+        // 2. Sets up the metadata
+        // 2.1: parse the eth hdr
+        skb->protocol = eth_type_trans(skb, qv->priv->dev);
+        // 3. set offloads; have the kernel calculate it
+        skb->ip_summed = CHECKSUM_NONE;
+        // 4. push the paket to the networking stack
+        napi_gro_receive(&qv->napi, skb);
+        /* this will pass to the protocol dispatch to correct handler via*/
+
+
+        // 5. replenish - dont need to b/ tx feedback
+        // 6. check the work done
+        if (napi_complete_done(napi, work_done))
+        {
+            return work_done;
+        }
 
 
         // TODO: loop back to rx
         // (1.5) add all the offloads
         // (2) create the desc and then add it to the ring
         *idx ++;
+        work_done++;
+        spin_lock(&priv->lock);
+        priv->stats64.rx_packets++;
+        priv->stats64.rx_bytes += len;
+        spin_unlock(&priv->lock);
+
     }
-
-
+    return work_done;
 
 }
 static int impair_poll(struct napi_struct *napi, int budget)
@@ -38,7 +61,6 @@ static int impair_poll(struct napi_struct *napi, int budget)
     int work_done = 0;
 
     /* TODO: RX pull from qv->rx_ring up to budget, netif_receive_skb() */
-    /* TODO: TX clean qv->tx_ring */
 
 
     if (work_done < budget)
@@ -47,12 +69,16 @@ static int impair_poll(struct napi_struct *napi, int budget)
     return work_done;
 }
 
+/**
+ * This function will act like the transmit interrupt per ring.
+ */
 static void impl_timer_handler(struct timer_list *t)
 {
     struct impair_q_vector *qv = container_of(t, struct impair_q_vector, timer);
-
-    napi_schedule(&qv->napi);
-    mod_timer(&qv->timer, jiffies + msecs_to_jiffies(qv->priv->delay_msecs));
+    if (napi_schedule_prep(&qv->napi))
+    {
+        __napi_schedule(&qv->napi);
+    }
 }
 
 int impair_alloc_q_vectors(struct impair_priv *priv, unsigned int num_qs)
@@ -85,7 +111,6 @@ int impair_alloc_q_vectors(struct impair_priv *priv, unsigned int num_qs)
 
         /* step 3 - enable/start napi polling*/
         napi_enable(&qv->napi);
-        mod_timer(&qv->timer, jiffies + msecs_to_jiffies(priv->delay_msecs));
     }
 
     return 0;

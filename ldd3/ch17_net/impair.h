@@ -26,14 +26,12 @@ struct impair_q_vector
 {
     /* napi <-> rx/tx <-> timer */
     struct impair_ring rx_ring, tx_ring;
-    struct sk_buff_head *rx_skb_queue;
     unsigned int q_index;
     struct napi_struct napi;
     /* act as our interrupt but it just is a timer*/
     struct timer_list timer;
 
     struct impair_priv *priv;
-
 };
 
 struct rx_filter_state {
