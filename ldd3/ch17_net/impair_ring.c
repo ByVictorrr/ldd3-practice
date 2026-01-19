@@ -27,10 +27,9 @@ int ring_init(struct impair_ring *r, u32 size)
 
 void ring_free_all(struct impair_ring *r)
 {
+    u32 i;
     if (!r) return;
-    kfree(r->desc);
-    // r->desc = NULL;
-    for (u32 i=r->next_to_clean; i!=r->next_to_use; i=ring_next(i))
+    for (i=r->next_to_clean; i!=r->next_to_use; i=ring_next(i))
     {
         if (r->desc[i].data)
         {

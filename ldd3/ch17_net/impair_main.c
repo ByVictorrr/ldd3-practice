@@ -8,6 +8,7 @@
 
 static unsigned int q_vectors = 2;
 static unsigned int delay_msecs = 100;
+static struct net_device *impair_dev;
 
 
 static netdev_tx_t impair_tx(struct sk_buff *skb, struct net_device *dev)
@@ -41,7 +42,7 @@ static netdev_tx_t impair_tx(struct sk_buff *skb, struct net_device *dev)
 
     spin_unlock_bh(&tx->lock);
     /** need to scheule/kick hw*/
-    mod_timer(&qv->timer, jiffies + 1);
+    mod_timer(&qv->timer, jiffies + msecs_to_jiffies(delay_msecs));
     return NETDEV_TX_OK;
 }
 
@@ -54,11 +55,13 @@ static void impair_tx_timeout(struct net_device *dev, unsigned int tx_q)
      */
     struct impair_priv *priv = netdev_priv(dev);
 
+    spin_lock_bh(&priv->lock);
     priv->stats64.tx_errors++;
     priv->stats64.tx_dropped++;
+    spin_unlock_bh(&priv->lock);
     /*  index the subqueue index that timed out*/
     struct netdev_queue * q = netdev_get_tx_queue(dev, tx_q);
-    /* TODO: clean/flush that queues TX ring, kick HW, eetc */
+    mod_timer(&priv->q_vect[tx_q].timer, jiffies + msecs_to_jiffies(delay_msecs));
     if (netif_tx_queue_stopped(q))
         netif_wake_subqueue(dev, tx_q);
 }
@@ -99,9 +102,9 @@ static int impair_mtu_set(struct net_device *dev, int new_mtu)
 {
     /**
      * (1) validate new_mtu (core checks between dev->{min,max}_mtu
-     * (2) reconfigure anything mtu dependent (rx buf size, limits, offloads)
+     * (2) reconfigure anything mtu dependent (rx buf size, limits, offloads) - here we dont care`
      * (3) update the value*/
-    // the kernel will change to the new_mtu if this function suceeds
+
     if (dev->mtu == new_mtu)
     {
         dev->mtu = new_mtu;
@@ -116,14 +119,14 @@ static void impair_get_stats64(struct net_device *dev, struct rtnl_link_stats64 
 {
     // dont know if we take a lock here
     struct impair_priv *priv = netdev_priv(dev);
-    spin_lock(&priv->lock);
+    spin_lock_bh(&priv->lock);
     *stats = priv->stats64;
     /* common stats
      *  RX/TX bytes: priv->stats64.rx_bytes, priv->stats64.tx_bytes
      *  errors: pkts failed to send or bad packets recv
      *  dropped: pkts the driver had to drop due to lack of resources
      */
-    spin_unlock(&priv->lock);
+    spin_unlock_bh(&priv->lock);
 
 }
 static int impair_set_mac_address(struct net_device *dev, void *p)
@@ -137,9 +140,9 @@ static int impair_set_mac_address(struct net_device *dev, void *p)
     if (ret)
         return ret;
 
-    spin_lock(&priv->lock);
+    spin_lock_bh(&priv->lock);
     ether_addr_copy(priv->rx_filter.primary_mac, addr->sa_data);
-    spin_unlock(&priv->lock);
+    spin_unlock_bh(&priv->lock);
 
 
     /* now actually update dev->dev_addr*/
@@ -151,9 +154,8 @@ static void impair_set_rx_mode(struct net_device *dev)
 {
     struct impair_priv *priv = netdev_priv(dev);
     struct rx_filter_state newf;
-
-    /* snapshot */
-    newf.promisc = !!(dev->flags & IFF_PROMISC);
+    struct netdev_hw_addr *ha;
+    memset(&newf, 0, sizeof(newf));
 
     /*
      * called when:
@@ -176,23 +178,31 @@ static void impair_set_rx_mode(struct net_device *dev)
      *  - IFF_ALLMULTI is set, OR
      *  - there exists any multicast address in the list.
      */
-    newf.allmulti = !!(dev->flags & IFF_ALLMULTI) || !netdev_mc_empty(dev);
 
+    newf.promisc = !!(dev->flags & IFF_PROMISC);
+    newf.allmulti = !!(dev->flags & IFF_ALLMULTI);
     /* primary MAC */
     ether_addr_copy(newf.primary_mac, dev->dev_addr);
 
+    if (!newf.promisc && !newf.allmulti)
+    {
+        netdev_for_each_mc_addr(ha, dev)
+        {
+            if (newf.mc_cam_len == IMPAIR_MC_CAM_SIZE)
+            {
+                newf.allmulti = true; // overflow
+                break;
+            }
+            ether_addr_copy(newf.mc_cam[newf.mc_cam_len++], ha->addr);
+        }
+    }
     /* commit */
-    spin_lock(&priv->lock);
+    spin_lock_bh(&priv->lock);
     priv->rx_filter = newf;
-    spin_unlock(&priv->lock);
-    /* dev->mc */
-
+    spin_unlock_bh(&priv->lock);
 }
 
-static int impair_bpf(struct net_device* dev, struct netdev_bpf* bpf)
-{
 
-}
 static struct net_device_ops impair_ops = {
     .ndo_open = impair_open,
     .ndo_stop = impair_close,
@@ -203,10 +213,10 @@ static struct net_device_ops impair_ops = {
     /* get the stats */
     .ndo_get_stats64 = impair_get_stats64,
 
-    .ndo_bpf = impair_bpf,
     /* timeout from watchdog of a tx queue */
     .ndo_tx_timeout = impair_tx_timeout,
     .ndo_start_xmit = impair_tx,
+
 
 
 };
@@ -221,53 +231,55 @@ void impair_setup(struct net_device *dev)
     dev->hard_header_len = sizeof(struct ethhdr);
     dev->netdev_ops = &impair_ops;
     /* set before register_netdevice */
-    // offloads
-    dev->hw_features = NETIF_F_SG | NETIF_F_RXCSUM | NETIF_F_GSO; // todo
+    /* offloads
+     * RXCSUM: we support L4 checksum validation on rx side for hw
+     * NET
+     */
+    dev->hw_features = NETIF_F_RXCSUM;
     dev->features = dev->hw_features;
     dev->vlan_features = dev->features;
 
     /* set random dev->dev_addr */
     eth_hw_addr_random(dev);
+    priv->dev = dev;
+    spin_lock_init(&priv->lock);
     priv->dev_addr = &dev->dev_addr;
     // dev->irq
     priv->delay_msecs = delay_msecs;
     priv->num_q_vectors = q_vectors;
     memset(&priv->rx_filter, 0, sizeof(priv->rx_filter)); // state filter
+    ether_addr_copy(priv->rx_filter.primary_mac, dev->dev_addr);
+    impair_set_rx_mode(dev);
 
     dev->netdev_ops = &impair_ops;
     dev->ethtool_ops = NULL;
-
-   
-
 }
-static int __init net_impair_init(void){
-    struct net_device *impair;
-    int ret;
-    /**
-     * dev->name: impair
-     *
-     */
-    
-    impair = alloc_netdev_mqs(sizeof(struct impair_priv), "netty", NET_NAME_UNKNOWN,
-        impair_setup, q_vectors, q_vectors);
-    struct impair_priv *priv = netdev_priv(impair);
 
-    if (!impair) return -ENOMEM;
-    ret = register_netdevice(impair);
+static int __init net_impair_init(void){
+    int ret;
+
+    impair_dev = alloc_netdev_mqs(sizeof(struct impair_priv), "impair%d", NET_NAME_UNKNOWN,
+        impair_setup, q_vectors, q_vectors);
+    if (!impair_dev) return -ENOMEM;
+
+    ret = register_netdev(impair_dev);
     if (ret)
     {
-        free_netdev(impair);
-        goto free_netdev;
+        free_netdev(impair_dev);
+        impair_dev = NULL;
     }
-
-    return 0;
-
-    free_netdev:
-        free_netdev(impair);
 
     return ret;
 }
 static void __exit net_impair_exit(void){
+    if (impair_dev)
+    {
+        unregister_netdev(impair_dev);
+        free_netdev(impair_dev);
+        impair_dev = NULL;
+    }
 }
 module_init(net_impair_init);
 module_exit(net_impair_exit);
+MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("Virtual Impair network driver.");

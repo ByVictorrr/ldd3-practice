@@ -7,3 +7,15 @@ kmod_target(impair
         # HEADERS edu_ioctl.h
         # DEPENDS_MODS mint_class
 )
+set(REMOTE_BIN_DIR "/usr/local/bin")
+set(IFACE "impair0")
+set(COUNT "50")
+
+remote_scp_and_run(impair_tests_all
+        LOCAL_PATH  ${CMAKE_CURRENT_SOURCE_DIR}/impair_tests_pktgen.sh
+        REMOTE_PATH ${REMOTE_BIN_DIR}/impair_tests_pktgen.sh
+        SSH_CMDS
+        "chmod +x ${REMOTE_BIN_DIR}/impair_tests_pktgen.sh"
+        "ip link set dev ${IFACE} up"
+        "IFACE=${IFACE} COUNT=${COUNT} ${REMOTE_BIN_DIR}/impair_tests_pktgen.sh all"
+)

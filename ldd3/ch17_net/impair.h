@@ -34,31 +34,18 @@ struct impair_q_vector
     struct impair_priv *priv;
 };
 
+#define IMPAIR_MC_CAM_SIZE 16
 struct rx_filter_state {
     bool promisc;
     bool allmulti;
-    uint8_t primary_mac[6];
+    u8 primary_mac[ETH_ALEN];
+    u8 mc_cam[IMPAIR_MC_CAM_SIZE][ETH_ALEN];
+    u16 mc_cam_len;
 };
-static inline bool is_mcast(const uint8_t mac[6]) { return (mac[0] & 1) != 0; }
-static inline bool is_bcast(const uint8_t mac[6]) {
-    return mac[0]==0xff && mac[1]==0xff && mac[2]==0xff &&
-           mac[3]==0xff && mac[4]==0xff && mac[5]==0xff;
-}
-static inline bool mac_eq(const uint8_t a[6], const uint8_t b[6]) {
-    return memcmp(a,b,6)==0;
-}
-
-inline bool rx_accept(const struct rx_filter_state* f, const uint8_t dst[6]) {
-    if (f->promisc) return true;
-    if (is_bcast(dst)) return true;
-    if (is_mcast(dst)) return f->allmulti;
-    return mac_eq(dst, f->primary_mac);
-}
 
 
 struct impair_priv{
     struct net_device *dev;
-    struct bpf_prog *prog;
     unsigned int num_q_vectors;
     struct impair_q_vector *q_vect;
 
