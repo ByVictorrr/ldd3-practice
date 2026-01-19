@@ -244,4 +244,8 @@ main(){
   log "PASS"
 }
 
+# Turn IPv6 off globally + for the interface (do this BEFORE bringing it up)
+sysctl -w net.ipv6.conf.all.disable_ipv6=1
+sysctl -w net.ipv6.conf.default.disable_ipv6=1
+sysctl -w net.ipv6.conf.${IFACE}.disable_ipv6=1 2>/dev/null || true
 main "$@"
